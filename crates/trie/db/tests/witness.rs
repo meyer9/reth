@@ -138,14 +138,12 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let witness = TrieWitness::from_tx(provider.tx_ref())
         .compute(HashedPostState {
             accounts: HashMap::from([(hashed_address, Some(Account::default()))]),
-            storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(slot, U256::from(1))]))]), // destroyed
+            storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(slot, U256::from(1)), (slot_2, U256::from(0))]))]), // destroyed
         })
         .unwrap();
 
-    // TODO: verify that the witness contains slot 2
-
+    // TODO: verify that the witness contains preimage for slot 2
     println!("root: {:?}", state_root);
-    println!("witness: {:?}", witness.contains_key(&slot_2));
     println!("witness: {:?}", witness);
 }
 
