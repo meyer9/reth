@@ -106,6 +106,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let slot = B256::random();
     let hashed_slot = keccak256(slot);
 
+    // find two slots that have the same first byte when hashed (in the MPT trie)
     let (slot_2, hashed_slot_2) = {
         loop {
             let maybe_slot_2 = B256::random();
@@ -126,7 +127,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
         }
     };
 
-    // Insert account and slot into database
+    // Insert account and slots into database
     provider.insert_account_for_hashing([(address, Some(Account::default()))]).unwrap();
     provider
         .insert_storage_for_hashing([(address, [StorageEntry { key: slot, value: U256::from(1) }, StorageEntry { key: slot_2, value: U256::from(2) }])])
@@ -140,6 +141,8 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
             storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(slot, U256::from(1))]))]), // destroyed
         })
         .unwrap();
+
+    // TODO: verify that the witness contains slot 2
 
     println!("root: {:?}", state_root);
     println!("witness: {:?}", witness.contains_key(&slot_2));
