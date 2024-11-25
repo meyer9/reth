@@ -138,7 +138,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let witness = TrieWitness::from_tx(provider.tx_ref())
         .compute(HashedPostState {
             accounts: HashMap::from([(hashed_address, Some(Account::default()))]),
-            storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(slot, U256::from(1)), (slot_2, U256::from(0))]))]), // destroyed
+            storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(slot_2, U256::from(0))]))]), // destroyed
         })
         .unwrap();
 
