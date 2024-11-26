@@ -14,7 +14,9 @@ use reth_db::{cursor::DbCursorRW, tables};
 use reth_db_api::transaction::DbTxMut;
 use reth_primitives::{Account, StorageEntry};
 use reth_provider::{test_utils::create_test_provider_factory, HashingWriter};
-use reth_trie::{proof::Proof, witness::TrieWitness, HashedPostState, HashedStorage, Nibbles, StateRoot};
+use reth_trie::{
+    proof::Proof, witness::TrieWitness, HashedPostState, HashedStorage, Nibbles, StateRoot,
+};
 use reth_trie_db::{DatabaseProof, DatabaseStateRoot, DatabaseTrieWitness};
 
 #[test]
@@ -109,14 +111,18 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let slot = B256::random();
     let hashed_slot = keccak256(slot);
 
+    let num_skips = 0;
+
     // find two slots that have the same first byte when hashed (in the MPT trie)
     let (slot_2, hashed_slot_2) = {
         loop {
             let maybe_slot_2 = B256::random();
             let hashed_slot_2 = keccak256(maybe_slot_2);
-            if Nibbles::unpack(hashed_slot).common_prefix_length(&Nibbles::unpack(hashed_slot_2)) == 0 // 0 always fails, 1 always passes
+            if Nibbles::unpack(hashed_slot).common_prefix_length(&Nibbles::unpack(hashed_slot_2))
+                == num_skips
+            // 0 always fails, 1 always passes
             {
-                break (maybe_slot_2, hashed_slot_2)
+                break (maybe_slot_2, hashed_slot_2);
             }
         }
     };
@@ -124,31 +130,54 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     // Insert account and slots into database
     provider.insert_account_for_hashing([(address, Some(Account::default()))]).unwrap();
     provider
-        .insert_storage_for_hashing([(address, [StorageEntry { key: slot, value: U256::from(1) }, StorageEntry { key: slot_2, value: U256::from(2) }])])
+        .insert_storage_for_hashing([(
+            address,
+            [
+                StorageEntry { key: slot, value: U256::from(1) },
+                StorageEntry { key: slot_2, value: U256::from(2) },
+            ],
+        )])
         .unwrap();
 
     let witness = TrieWitness::from_tx(provider.tx_ref())
         .compute(HashedPostState {
             accounts: HashMap::from([(hashed_address, Some(Account::default()))]),
-            storages: HashMap::from([(hashed_address, HashedStorage::from_iter(false, [(hashed_slot_2, U256::from(0))]))]), // destroyed
+            storages: HashMap::from([(
+                hashed_address,
+                HashedStorage::from_iter(false, [(hashed_slot, U256::from(0))]),
+            )]), // destroyed
         })
         .unwrap();
 
     // rlp encode: [tagged_hashed_slot_2, 2] so we can check if the witness contains the correct value
-    let tagged_hashed_slot: Vec<_> = Bytes::from(vec!(0x20u8)).into_iter().chain(hashed_slot.into_iter().skip(1)).collect();
+    let tagged_hashed_slot_2: Vec<u8> = Nibbles::from_vec(
+        Nibbles::unpack(hashed_slot_2.to_vec())
+            .iter()
+            .skip(num_skips + 1)
+            .copied()
+            .collect::<Vec<u8>>(),
+    )
+    .encode_path_leaf(true)
+    .to_vec();
     let mut rlp = Vec::new();
-    alloy_rlp::encode_list::<Bytes, Bytes>(&[Bytes::from(tagged_hashed_slot), Bytes::from(vec!(1u8))], &mut rlp);
+    alloy_rlp::encode_list::<Bytes, Bytes>(
+        &[tagged_hashed_slot_2.into(), Bytes::from(vec![2u8])],
+        &mut rlp,
+    );
 
     // hash the result to find the MPT node hash
     let hash_storage_slot: alloy_primitives::FixedBytes<32> = keccak256(rlp.clone());
 
-    // println!("hash_storage_slot: {:?}", hash_storage_slot);
-    // println!("address: {:?}", address);
-    // println!("rlp: {:?}", rlp.clone().into_iter().map(|b| format!("{:02x}", b)).collect::<String>());
-    // println!("hashed_address: {:?}", hashed_address);
-    // println!("hashed_slot_1: {:?}", hashed_slot);
-    // println!("hashed_slot_2: {:?}", hashed_slot_2);
-    // println!("witness: {:?}", witness);
+    println!("hash_storage_slot: {:?}", hash_storage_slot);
+    println!("address: {:?}", address);
+    println!(
+        "rlp: {:?}",
+        rlp.clone().into_iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    );
+    println!("hashed_address: {:?}", hashed_address);
+    println!("hashed_slot_1: {:?}", hashed_slot);
+    println!("hashed_slot_2: {:?}", hashed_slot_2);
+    println!("witness: {:?}", witness);
 
     // ensure the witness contains the MPT node of the sibling of the node that was deleted
     assert_eq!(witness.get(&hash_storage_slot), Some(&rlp.into()));
