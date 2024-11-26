@@ -111,7 +111,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let slot = B256::random();
     let hashed_slot = keccak256(slot);
 
-    let num_skips = 0;
+    let common_prefix_length = 0;
 
     // find two slots that have the same first byte when hashed (in the MPT trie)
     let (slot_2, hashed_slot_2) = {
@@ -119,7 +119,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
             let maybe_slot_2 = B256::random();
             let hashed_slot_2 = keccak256(maybe_slot_2);
             if Nibbles::unpack(hashed_slot).common_prefix_length(&Nibbles::unpack(hashed_slot_2))
-                == num_skips
+                == common_prefix_length
             // 0 always fails, 1 always passes
             {
                 break (maybe_slot_2, hashed_slot_2);
@@ -153,7 +153,7 @@ fn includes_nodes_for_destroyed_storage_nodes_2() {
     let tagged_hashed_slot_2: Vec<u8> = Nibbles::from_vec(
         Nibbles::unpack(hashed_slot_2.to_vec())
             .iter()
-            .skip(num_skips + 1)
+            .skip(common_prefix_length + 1)
             .copied()
             .collect::<Vec<u8>>(),
     )
