@@ -471,7 +471,7 @@ where
         let ExecutionWitnessRecord { hashed_state, codes, keys } =
             ExecutionWitnessRecord::from_executed_state(state);
         let state = state.database.as_ref().witness(Default::default(), hashed_state)?;
-        Ok(ExecutionWitness { state: state.into_iter().collect(), codes, keys })
+        Ok(ExecutionWitness { state: state.values().cloned().collect(), codes: codes.values().cloned().collect(), keys: keys.values().cloned().collect() })
     }
 }
 

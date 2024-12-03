@@ -641,7 +641,7 @@ where
 
                 let state =
                     state_provider.witness(Default::default(), hashed_state).map_err(Into::into)?;
-                Ok(ExecutionWitness { state: state.into_iter().collect(), codes, keys })
+                Ok(ExecutionWitness { state: state.values().cloned().collect(), codes: codes.values().cloned().collect(), keys: keys.values().cloned().collect() })
             })
             .await
     }
