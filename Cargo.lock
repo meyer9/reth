@@ -529,6 +529,7 @@ dependencies = [
 [[package]]
 name = "alloy-rpc-types-debug"
 version = "0.7.2"
+source = "git+https://github.com/meyer9/alloy.git?branch=meyer9/update-execution-witness-api#942a46cda1636bdebf8cccfb435b0bf9e9c63065"
 dependencies = [
  "alloy-primitives",
  "serde",

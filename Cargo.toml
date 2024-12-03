@@ -453,7 +453,7 @@ alloy-rpc-types = { version = "0.7.2", features = [
 alloy-rpc-types-admin = { version = "0.7.2", default-features = false }
 alloy-rpc-types-anvil = { version = "0.7.2", default-features = false }
 alloy-rpc-types-beacon = { version = "0.7.2", default-features = false }
-alloy-rpc-types-debug = { path = "../alloy/crates/rpc-types-debug", default-features = false }
+alloy-rpc-types-debug = { git = "https://github.com/meyer9/alloy.git", branch = "meyer9/update-execution-witness-api", default-features = false }
 alloy-rpc-types-engine = { version = "0.7.2", default-features = false }
 alloy-rpc-types-eth = { version = "0.7.2", default-features = false }
 alloy-rpc-types-mev = { version = "0.7.2", default-features = false }
