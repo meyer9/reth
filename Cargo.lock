@@ -2463,6 +2463,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive-where"
+version = "1.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62d671cc41a825ebabc75757b62d3d168c577f9149b2d49ece1dad1f72119d25"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "derive_arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2683,7 +2694,7 @@ dependencies = [
  "reth-provider",
  "reth-revm",
  "reth-stages",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror 2.0.11",
@@ -6508,7 +6519,7 @@ dependencies = [
  "reth-revm",
  "reth-tasks",
  "reth-transaction-pool",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
 ]
@@ -6572,7 +6583,7 @@ dependencies = [
  "reth-storage-api",
  "reth-testing-utils",
  "reth-trie",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -7247,7 +7258,7 @@ dependencies = [
  "reth-trie-db",
  "reth-trie-parallel",
  "reth-trie-sparse",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "schnellru",
  "thiserror 2.0.11",
  "tokio",
@@ -7278,7 +7289,7 @@ dependencies = [
  "reth-revm",
  "reth-rpc-types-compat",
  "reth-trie",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "tokio",
@@ -7442,7 +7453,7 @@ dependencies = [
  "reth-revm",
  "reth-storage-api",
  "reth-transaction-pool",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
 ]
 
@@ -7503,8 +7514,8 @@ dependencies = [
  "reth-prune-types",
  "reth-revm",
  "reth-storage-errors",
- "revm",
- "revm-primitives",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -7526,7 +7537,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-revm",
  "reth-testing-utils",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "secp256k1",
  "serde_json",
 ]
@@ -7542,7 +7553,7 @@ dependencies = [
  "reth-consensus",
  "reth-prune-types",
  "reth-storage-errors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.11",
 ]
 
@@ -7562,7 +7573,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-trie",
  "reth-trie-common",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_with",
 ]
@@ -8106,7 +8117,7 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "reth-trie-db",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json",
  "tokio",
 ]
@@ -8281,8 +8292,8 @@ dependencies = [
  "reth-primitives-traits",
  "reth-prune-types",
  "reth-revm",
- "revm",
- "revm-primitives",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.11",
  "tracing",
 ]
@@ -8349,7 +8360,7 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "reth-trie-db",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "tokio",
@@ -8387,7 +8398,8 @@ dependencies = [
  "reth-revm",
  "reth-rpc-types-compat",
  "reth-transaction-pool",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revm-optimism",
  "sha2 0.10.8",
  "thiserror 2.0.11",
  "tracing",
@@ -8413,7 +8425,7 @@ dependencies = [
  "reth-codecs",
  "reth-primitives-traits",
  "reth-zstd-compressors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rstest",
  "secp256k1",
  "serde",
@@ -8458,7 +8470,7 @@ dependencies = [
  "reth-rpc-server-types",
  "reth-tasks",
  "reth-transaction-pool",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json",
  "thiserror 2.0.11",
  "tokio",
@@ -8493,7 +8505,7 @@ dependencies = [
  "reth-payload-primitives",
  "reth-primitives",
  "reth-primitives-traits",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -8525,7 +8537,7 @@ dependencies = [
  "reth-chainspec",
  "reth-errors",
  "reth-primitives",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "thiserror 2.0.11",
  "tokio",
@@ -8586,7 +8598,7 @@ dependencies = [
  "reth-testing-utils",
  "reth-trie-common",
  "reth-zstd-compressors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rstest",
  "secp256k1",
  "serde",
@@ -8620,7 +8632,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "reth-codecs",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "secp256k1",
  "serde",
  "serde_json",
@@ -8671,7 +8683,7 @@ dependencies = [
  "reth-testing-utils",
  "reth-trie",
  "reth-trie-db",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "strum",
  "tempfile",
  "tokio",
@@ -8744,7 +8756,7 @@ dependencies = [
  "reth-storage-api",
  "reth-storage-errors",
  "reth-trie",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -8805,9 +8817,9 @@ dependencies = [
  "reth-tasks",
  "reth-testing-utils",
  "reth-transaction-pool",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "revm-inspectors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror 2.0.11",
@@ -8982,9 +8994,9 @@ dependencies = [
  "reth-tasks",
  "reth-transaction-pool",
  "reth-trie-common",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "revm-inspectors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
 ]
@@ -9019,9 +9031,9 @@ dependencies = [
  "reth-tasks",
  "reth-transaction-pool",
  "reth-trie",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "revm-inspectors",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "schnellru",
  "serde",
  "serde_json",
@@ -9233,7 +9245,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie",
  "reth-trie-db",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -9338,8 +9350,8 @@ dependencies = [
  "reth-storage-api",
  "reth-tasks",
  "reth-tracing",
- "revm-interpreter",
- "revm-primitives",
+ "revm-interpreter 15.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-hash 2.1.0",
  "schnellru",
  "serde",
@@ -9375,7 +9387,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie-common",
  "reth-trie-sparse",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json",
  "tracing",
  "triehash",
@@ -9431,7 +9443,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie",
  "reth-trie-common",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "similar-asserts",
@@ -9506,10 +9518,110 @@ dependencies = [
  "cfg-if",
  "dyn-clone",
  "once_cell",
- "revm-interpreter",
- "revm-precompile",
+ "revm-interpreter 15.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "revm-precompile 16.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "revm"
+version = "19.2.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "revm-bytecode",
+ "revm-context",
+ "revm-context-interface",
+ "revm-database-interface",
+ "revm-handler",
+ "revm-handler-interface",
+ "revm-interpreter 15.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-precompile 16.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+ "revm-state",
+]
+
+[[package]]
+name = "revm-bytecode"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "bitvec",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+]
+
+[[package]]
+name = "revm-context"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "cfg-if",
+ "derive-where",
+ "revm-bytecode",
+ "revm-context-interface",
+ "revm-database-interface",
+ "revm-interpreter 15.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+ "revm-state",
+]
+
+[[package]]
+name = "revm-context-interface"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "auto_impl",
+ "revm-database-interface",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+ "revm-state",
+ "serde",
+]
+
+[[package]]
+name = "revm-database-interface"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "auto_impl",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-state",
+]
+
+[[package]]
+name = "revm-handler"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "revm-bytecode",
+ "revm-context-interface",
+ "revm-handler-interface",
+ "revm-interpreter 15.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-precompile 16.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+ "revm-state",
+ "serde",
+]
+
+[[package]]
+name = "revm-handler-interface"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+]
+
+[[package]]
+name = "revm-inspector"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "auto_impl",
+ "revm 19.2.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
 ]
 
 [[package]]
@@ -9526,7 +9638,7 @@ dependencies = [
  "boa_engine",
  "boa_gc",
  "colorchoice",
- "revm",
+ "revm 19.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json",
  "thiserror 2.0.11",
 ]
@@ -9537,7 +9649,32 @@ version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5ff76b50b5a9fa861fbc236fc82ce1afdf58861f65012aea807d679e54630d6"
 dependencies = [
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+]
+
+[[package]]
+name = "revm-interpreter"
+version = "15.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "revm-bytecode",
+ "revm-context-interface",
+ "revm-handler-interface",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
+ "serde",
+]
+
+[[package]]
+name = "revm-optimism"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "once_cell",
+ "revm 19.2.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-inspector",
+ "revm-precompile 16.0.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
  "serde",
 ]
 
@@ -9554,7 +9691,29 @@ dependencies = [
  "k256",
  "once_cell",
  "p256",
- "revm-primitives",
+ "revm-primitives 15.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ripemd",
+ "secp256k1",
+ "sha2 0.10.8",
+ "substrate-bn",
+]
+
+[[package]]
+name = "revm-precompile"
+version = "16.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "aurora-engine-modexp",
+ "blst",
+ "c-kzg",
+ "cfg-if",
+ "k256",
+ "libsecp256k1",
+ "once_cell",
+ "p256",
+ "revm-context-interface",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
  "ripemd",
  "secp256k1",
  "sha2 0.10.8",
@@ -9579,6 +9738,34 @@ dependencies = [
  "enumn",
  "hex",
  "serde",
+]
+
+[[package]]
+name = "revm-primitives"
+version = "15.1.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "alloy-primitives",
+]
+
+[[package]]
+name = "revm-specification"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "enumn",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+]
+
+[[package]]
+name = "revm-state"
+version = "1.0.0"
+source = "git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd#9bef7d903bbabf0dafff8b5de85d40654adf4cbd"
+dependencies = [
+ "bitflags 2.7.0",
+ "revm-bytecode",
+ "revm-primitives 15.1.0 (git+https://github.com/bluealloy/revm.git?rev=9bef7d903bbabf0dafff8b5de85d40654adf4cbd)",
+ "revm-specification",
 ]
 
 [[package]]

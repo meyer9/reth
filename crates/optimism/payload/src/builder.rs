@@ -6,7 +6,7 @@ use crate::{
     payload::{OpBuiltPayload, OpPayloadBuilderAttributes},
 };
 use alloy_consensus::{Eip658Value, Header, Transaction, Typed2718, EMPTY_OMMER_ROOT_HASH};
-use alloy_eips::{eip4895::Withdrawals, merge::BEACON_NONCE};
+use alloy_eips::{eip4895::Withdrawals, merge::BEACON_NONCE,eip2718::Encodable2718};
 use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_debug::ExecutionWitness;
@@ -45,6 +45,7 @@ use revm::{
     },
     Database, DatabaseCommit,
 };
+use revm_optimism::estimate_tx_compressed_size;
 use std::{fmt::Display, sync::Arc};
 use tracing::{debug, trace, warn};
 
@@ -560,12 +561,14 @@ impl ExecutionInfo {
         tx_data_limit: Option<u64>,
         block_data_limit: Option<u64>,
     ) -> bool {
-        if tx_data_limit.is_some_and(|da_limit| tx.length() as u64 > da_limit) {
+        let tx_compressed_size = estimate_tx_compressed_size(&tx.encoded_2718()) as u64;
+
+        if tx_data_limit.is_some_and(|da_limit| tx_compressed_size > da_limit) {
             return true;
         }
 
         if block_data_limit
-            .is_some_and(|da_limit| self.cumulative_da_bytes_used + (tx.length() as u64) > da_limit)
+            .is_some_and(|da_limit| self.cumulative_da_bytes_used + tx_compressed_size > da_limit)
         {
             return true;
         }

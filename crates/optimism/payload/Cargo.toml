@@ -37,6 +37,7 @@ reth-optimism-primitives.workspace = true
 
 # ethereum
 revm.workspace = true
+revm-optimism = { git = "https://github.com/bluealloy/revm.git", rev = "9bef7d903bbabf0dafff8b5de85d40654adf4cbd", optional = false }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
