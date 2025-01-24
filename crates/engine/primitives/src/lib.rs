@@ -13,6 +13,7 @@ mod error;
 use core::fmt;
 
 use alloy_consensus::BlockHeader;
+use alloy_eips::eip7685::Requests;
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadSidecar, PayloadError};
 pub use error::*;
 
@@ -120,6 +121,12 @@ pub trait EngineValidator<Types: EngineTypes>: PayloadValidator {
         &self,
         version: EngineApiMessageVersion,
         payload_or_attrs: PayloadOrAttributes<'_, <Types as PayloadTypes>::PayloadAttributes>,
+    ) -> Result<(), EngineObjectValidationError>;
+
+    /// Validates execution requests based on the chain type.
+    fn validate_execution_requests(
+        &self,
+        execution_requests: &Requests,
     ) -> Result<(), EngineObjectValidationError>;
 
     /// Ensures that the payload attributes are valid for the given [`EngineApiMessageVersion`].

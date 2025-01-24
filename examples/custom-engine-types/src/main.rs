@@ -58,8 +58,8 @@ use reth_engine_local::payload::UnsupportedLocalAttributes;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_node_api::{
     payload::{EngineApiMessageVersion, EngineObjectValidationError, PayloadOrAttributes},
-    validate_version_specific_fields, AddOnsContext, EngineTypes, EngineValidator,
-    FullNodeComponents, PayloadAttributes, PayloadBuilderAttributes, PayloadValidator,
+    validate_version_specific_fields, validate_execution_requests, AddOnsContext, EngineTypes,
+    EngineValidator, FullNodeComponents, PayloadAttributes, PayloadBuilderAttributes, PayloadValidator,
 };
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_node_ethereum::{
@@ -226,6 +226,13 @@ where
         payload_or_attrs: PayloadOrAttributes<'_, T::PayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
         validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
+    }
+
+    fn validate_execution_requests(
+        &self,
+        execution_requests: &alloy_eips::eip7685::Requests,
+    ) -> Result<(), EngineObjectValidationError> {
+        validate_execution_requests(execution_requests)
     }
 
     fn ensure_well_formed_attributes(

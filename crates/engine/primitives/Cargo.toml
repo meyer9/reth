@@ -23,6 +23,7 @@ reth-errors.workspace = true
 # alloy
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 # async

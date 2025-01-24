@@ -9,6 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod payload;
+use alloy_eips::eip7685::Requests;
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadSidecar, PayloadError};
 pub use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
@@ -18,7 +19,7 @@ pub use payload::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_chainspec::ChainSpec;
 use reth_engine_primitives::{BuiltPayload, EngineTypes, EngineValidator, PayloadValidator};
 use reth_payload_primitives::{
-    validate_version_specific_fields, EngineApiMessageVersion, EngineObjectValidationError,
+    validate_version_specific_fields, validate_execution_requests, EngineApiMessageVersion, EngineObjectValidationError,
     PayloadOrAttributes, PayloadTypes,
 };
 use reth_payload_validator::ExecutionPayloadValidator;
@@ -114,6 +115,13 @@ where
         payload_or_attrs: PayloadOrAttributes<'_, EthPayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
         validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
+    }
+
+    fn validate_execution_requests(
+        &self,
+        execution_requests: &Requests,
+    ) -> Result<(), EngineObjectValidationError> {
+        validate_execution_requests(execution_requests)
     }
 
     fn ensure_well_formed_attributes(

@@ -1,6 +1,7 @@
+use alloy_eips::eip7685::Requests;
 use alloy_rpc_types_engine::{
     ExecutionPayload, ExecutionPayloadEnvelopeV2, ExecutionPayloadSidecar, ExecutionPayloadV1,
-    PayloadError,
+    PayloadError
 };
 use op_alloy_rpc_types_engine::{
     OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4, OpPayloadAttributes,
@@ -124,6 +125,19 @@ where
             payload_or_attrs.timestamp(),
             payload_or_attrs.parent_beacon_block_root().is_some(),
         )
+    }
+
+    fn validate_execution_requests(
+        &self,
+        execution_requests: &Requests,
+    ) -> Result<(), EngineObjectValidationError> {
+        if execution_requests.len() > 0 {
+            return Err(EngineObjectValidationError::InvalidParams(
+                "non-empty execution requests".to_string().into(),
+            ))
+        }
+
+        Ok(())
     }
 
     fn ensure_well_formed_attributes(
