@@ -651,11 +651,11 @@ where
                     .map_err(|err| EthApiError::Internal(err.into()))?;
 
                 let ExecutionWitnessRecord { hashed_state, codes, keys } = witness_record;
-
+                
                 let state = state_provider
                     .witness(Default::default(), hashed_state)
                     .map_err(EthApiError::from)?;
-                Ok(ExecutionWitness { state: state.into_iter().collect(), codes, keys })
+                Ok(ExecutionWitness::new(state.iter().chain(keys.values()).chain(codes.values()).cloned().collect()))
             })
             .await
     }

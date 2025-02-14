@@ -549,7 +549,7 @@ impl<Txs> OpBuilder<'_, Txs> {
         let ExecutionWitnessRecord { hashed_state, codes, keys } =
             ExecutionWitnessRecord::from_executed_state(state);
         let state = state.database.as_ref().witness(Default::default(), hashed_state)?;
-        Ok(ExecutionWitness { state: state.into_iter().collect(), codes, keys })
+        Ok(ExecutionWitness::new(state.iter().chain(codes.values()).chain(keys.values()).cloned().collect()))
     }
 }
 

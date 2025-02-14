@@ -1,5 +1,5 @@
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{keccak256, B256};
+use alloy_primitives::{keccak256, Bytes, B256};
 use alloy_rpc_types_debug::ExecutionWitness;
 use pretty_assertions::Comparison;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -17,7 +17,7 @@ use reth_rpc_api::DebugApiClient;
 use reth_tracing::tracing::warn;
 use reth_trie::{updates::TrieUpdates, HashedStorage};
 use serde::Serialize;
-use std::{collections::HashMap, fmt::Debug, fs::File, io::Write, path::PathBuf};
+use std::{fmt::Debug, fs::File, io::Write, path::PathBuf};
 
 /// Generates a witness for the given block and saves it to a file.
 #[derive(Debug)]
@@ -108,7 +108,7 @@ where
         let mut bundle_state = db.take_bundle();
 
         // Initialize a map of preimages.
-        let mut state_preimages = HashMap::default();
+        let mut state_preimages: Vec<Bytes> = Vec::default();
 
         // Grab all account proofs for the data accessed during block execution.
         //
@@ -127,14 +127,14 @@ where
                 .or_insert_with(|| HashedStorage::new(account.status.was_destroyed()));
 
             if let Some(account) = account.account {
-                state_preimages.insert(hashed_address, alloy_rlp::encode(address).into());
+                state_preimages.push(alloy_rlp::encode(address).clone().into());
 
                 for (slot, value) in account.storage {
                     let slot = B256::from(slot);
                     let hashed_slot = keccak256(slot);
                     storage.storage.insert(hashed_slot, value);
 
-                    state_preimages.insert(hashed_slot, alloy_rlp::encode(slot).into());
+                    state_preimages.push(alloy_rlp::encode(slot).clone().into());
                 }
             }
         }
@@ -144,12 +144,8 @@ where
         let state_provider = db.database.into_inner();
         let state = state_provider.witness(Default::default(), hashed_state.clone())?;
 
-        // Write the witness to the output directory.
-        let response = ExecutionWitness {
-            state: HashMap::from_iter(state),
-            codes: Default::default(),
-            keys: state_preimages,
-        };
+        // Write the witness to the output directory.\
+        let response = ExecutionWitness::new(state.iter().chain(state_preimages.iter()).cloned().collect::<Vec<Bytes>>());
         let re_executed_witness_path = self.save_file(
             format!("{}_{}.witness.re_executed.json", block.number(), block.hash()),
             &response,
