@@ -11,6 +11,7 @@ use std::{
 mod checksum;
 mod clear;
 mod diff;
+mod dump_preimages;
 mod get;
 mod list;
 mod stats;
@@ -48,6 +49,8 @@ pub enum Subcommands {
     },
     /// Deletes all table entries
     Clear(clear::Command),
+    /// Dumps the current trie as preimages
+    DumpPreimages(dump_preimages::Command),
     /// Lists current and local database versions
     Version,
     /// Returns the full database path
@@ -134,6 +137,11 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
             Subcommands::Clear(command) => {
                 let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RW)?;
                 command.execute(provider_factory)?;
+            }
+            Subcommands::DumpPreimages(command) => {
+                db_ro_exec!(self.env, tool, N, {
+                    command.execute(&tool)?;
+                });
             }
             Subcommands::Version => {
                 let local_db_version = match get_db_version(&db_path) {

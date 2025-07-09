@@ -51,6 +51,7 @@ reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
 reth-trie-common = { workspace = true, optional = true }
 reth-primitives-traits.workspace = true
+reth-preimage-storage = { workspace = true }
 reth-discv4.workspace = true
 reth-discv5.workspace = true
 
@@ -98,7 +99,9 @@ proptest-arbitrary-interop = { workspace = true, optional = true }
 reth-ethereum-cli.workspace = true
 
 [features]
-default = []
+default = [
+    "dynamodb",
+]
 arbitrary = [
     "dep:proptest",
     "dep:arbitrary",
@@ -121,4 +124,7 @@ arbitrary = [
     "alloy-consensus/arbitrary",
     "reth-primitives-traits/arbitrary",
     "reth-ethereum-primitives/arbitrary",
+]
+dynamodb = [
+    "reth-preimage-storage/dynamodb",
 ]

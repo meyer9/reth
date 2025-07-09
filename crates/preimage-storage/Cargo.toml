@@ -1,0 +1,43 @@
+[package]
+name = "reth-preimage-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Preimage storage interface for Reth with DynamoDB support"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core
+alloy-primitives.workspace = true
+async-trait = "0.1"
+bytes = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing.workspace = true
+eyre.workspace = true
+uuid = { version = "1.0", features = ["v4"] }
+hex = "0.4"
+thiserror = "1.0"
+
+# AWS SDK
+aws-config = "1.0"
+aws-sdk-dynamodb = "1.0"
+
+# Reth dependencies
+reth-db-api.workspace = true
+reth-trie.workspace = true
+alloy-rlp.workspace = true
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+
+[features]
+default = ["dynamodb"]
+dynamodb = [] 

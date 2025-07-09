@@ -91,6 +91,7 @@ members = [
     "crates/payload/util/",
     "crates/primitives-traits/",
     "crates/primitives/",
+    "crates/preimage-storage/",
     "crates/prune/prune",
     "crates/prune/types",
     "crates/ress/protocol",
@@ -411,6 +412,7 @@ reth-payload-builder-primitives = { path = "crates/payload/builder-primitives" }
 reth-payload-primitives = { path = "crates/payload/primitives" }
 reth-payload-validator = { path = "crates/payload/validator" }
 reth-payload-util = { path = "crates/payload/util" }
+reth-preimage-storage = { path = "crates/preimage-storage" }
 reth-primitives = { path = "crates/primitives", default-features = false }
 reth-primitives-traits = { path = "crates/primitives-traits", default-features = false }
 reth-provider = { path = "crates/storage/provider" }
