@@ -12,6 +12,7 @@ mod checksum;
 mod clear;
 mod diff;
 mod dump_preimages;
+mod dump_historical_preimages;
 mod get;
 mod list;
 mod stats;
@@ -25,12 +26,12 @@ pub struct Command<C: ChainSpecParser> {
     env: EnvironmentArgs<C>,
 
     #[command(subcommand)]
-    command: Subcommands,
+    command: Subcommands<C>,
 }
 
 #[derive(Subcommand, Debug)]
 /// `reth db` subcommands
-pub enum Subcommands {
+pub enum Subcommands<C: ChainSpecParser> {
     /// Lists all the tables, their entry count and their size
     Stats(stats::Command),
     /// Lists the contents of a table
@@ -50,7 +51,9 @@ pub enum Subcommands {
     /// Deletes all table entries
     Clear(clear::Command),
     /// Dumps the current trie as preimages
-    DumpPreimages(dump_preimages::Command),
+    DumpPreimages(dump_preimages::Command<C>),
+    /// Dumps historical trie preimages from a specific block
+    DumpHistoricalPreimages(dump_historical_preimages::Command<C>),
     /// Lists current and local database versions
     Version,
     /// Returns the full database path
@@ -140,7 +143,12 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
             }
             Subcommands::DumpPreimages(command) => {
                 db_ro_exec!(self.env, tool, N, {
-                    command.execute(&tool)?;
+                    command.execute(&tool).await?;
+                });
+            }
+            Subcommands::DumpHistoricalPreimages(command) => {
+                db_ro_exec!(self.env, tool, N, {
+                    command.execute(&tool).await?;
                 });
             }
             Subcommands::Version => {

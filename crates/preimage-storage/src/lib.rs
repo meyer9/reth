@@ -6,6 +6,7 @@
 pub mod error;
 pub mod traits;
 pub mod extractor;
+pub mod historical_extractor;
 
 #[cfg(feature = "dynamodb")]
 pub mod dynamodb;
@@ -20,6 +21,7 @@ pub use dynamodb::DynamoDbPreimageStorage;
 
 pub use local::LocalPreimageStorage;
 pub use extractor::{TriePreimageExtractor, TriePreimageData, TriePreimageStatistics};
+pub use historical_extractor::{HistoricalPreimageExtractor, HistoricalExtractionProgress, HistoricalExtractionStatistics};
 
 /// A preimage entry containing a hash and its corresponding data
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,6 +48,8 @@ pub struct PreimageStorageConfig {
     pub table_name: Option<String>,
     /// AWS region for DynamoDB (if using DynamoDB backend)
     pub aws_region: Option<String>,
+    /// Custom endpoint URL for DynamoDB (useful for local testing)
+    pub dynamodb_endpoint_url: Option<String>,
     /// Local file path for local storage (if using local backend)
     pub local_path: Option<std::path::PathBuf>,
 }
@@ -56,6 +60,7 @@ impl Default for PreimageStorageConfig {
             batch_size: 100,
             table_name: Some("reth-preimages".to_string()),
             aws_region: Some("us-east-1".to_string()),
+            dynamodb_endpoint_url: None,
             local_path: None,
         }
     }

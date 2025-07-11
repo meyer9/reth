@@ -28,17 +28,27 @@ impl DynamoDbPreimageStorage {
             PreimageStorageError::InvalidConfig("table_name is required for DynamoDB".to_string())
         })?;
 
-        // Load AWS configuration
-        let aws_config = if let Some(region) = config.aws_region {
-            aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17())
-                .region(Region::new(region))
-                .load()
-                .await
+        // Load AWS configuration with optional custom endpoint
+        let mut aws_config_builder = aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
+        
+        // Set region if provided
+        if let Some(region) = config.aws_region {
+            aws_config_builder = aws_config_builder.region(Region::new(region));
+        }
+        
+        let aws_config = aws_config_builder.load().await;
+        
+        // Create client with optional custom endpoint
+        let client = if let Some(endpoint_url) = config.dynamodb_endpoint_url {
+            info!("Using custom DynamoDB endpoint: {}", endpoint_url);
+            Client::from_conf(
+                aws_sdk_dynamodb::config::Builder::from(&aws_config)
+                    .endpoint_url(endpoint_url)
+                    .build()
+            )
         } else {
-            aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17()).load().await
+            Client::new(&aws_config)
         };
-
-        let client = Client::new(&aws_config);
 
         // Verify table exists
         let storage = Self {
@@ -132,6 +142,7 @@ impl DynamoDbPreimageStorage {
             let mut request_items = HashMap::new();
             request_items.insert(self.table_name.clone(), write_requests);
 
+            info!("DynamoDB: Storing {} preimages in batch of size {}", chunk.len(), self.batch_size);
             self.client
                 .batch_write_item()
                 .set_request_items(Some(request_items))

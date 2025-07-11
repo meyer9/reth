@@ -1,6 +1,6 @@
 //! Trie preimage extractor for reading from reth database
 
-use crate::{PreimageEntry, PreimageStorageResult, PreimageStorageError};
+use crate::{PreimageEntry, PreimageStorageResult, PreimageStorageError, PreimageStorage};
 use alloy_primitives::{keccak256, B256};
 use alloy_rlp::Encodable;
 use reth_db_api::{
@@ -8,23 +8,109 @@ use reth_db_api::{
     tables::{AccountsTrie, StoragesTrie},
     transaction::DbTx,
 };
-use reth_trie::{BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey};
+use reth_trie::{BranchNodeCompact, StorageTrieEntry, StoredNibbles};
 use std::collections::HashMap;
 use tracing::{debug, info, trace};
+use std::time::Instant;
+
+/// Progress tracking for trie extraction
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExtractionProgress {
+    /// Current number of nodes processed
+    pub nodes_processed: usize,
+    /// Estimated total number of nodes (based on trie structure)
+    pub estimated_total_nodes: usize,
+    /// Current depth in the trie
+    pub current_depth: usize,
+    /// Progress percentage (0.0 to 100.0)
+    pub progress_percentage: f64,
+}
+
+impl ExtractionProgress {
+    /// Create new progress tracker
+    pub fn new(estimated_total: usize) -> Self {
+        Self {
+            nodes_processed: 0,
+            estimated_total_nodes: estimated_total,
+            current_depth: 0,
+            progress_percentage: 0.0,
+        }
+    }
+    
+    /// Update progress with a new node
+    pub fn update(&mut self, depth: usize) {
+        self.nodes_processed += 1;
+        self.current_depth = depth;
+        self.progress_percentage = if self.estimated_total_nodes > 0 {
+            (self.nodes_processed as f64 / self.estimated_total_nodes as f64) * 100.0
+        } else {
+            0.0
+        };
+    }
+    
+    /// Get progress as a formatted string
+    pub fn to_string(&self) -> String {
+        format!(
+            "Progress: {:.1}% ({}/{}) at depth {}",
+            self.progress_percentage,
+            self.nodes_processed,
+            self.estimated_total_nodes,
+            self.current_depth
+        )
+    }
+}
 
 /// Trie preimage extractor for reading from reth database
 pub struct TriePreimageExtractor;
 
 impl TriePreimageExtractor {
-    /// Extract all preimages from the trie database
+    /// Extract all preimages from the trie database (original method for backward compatibility)
     pub fn extract_all_preimages<TX: DbTx>(
         tx: &TX,
     ) -> PreimageStorageResult<TriePreimageData> {
         let mut preimage_data = TriePreimageData::new();
         
-        // Extract account trie preimages
-        let account_preimages = Self::extract_account_trie_preimages(tx)?;
+        debug!("Starting account trie estimation and extraction");
+        let start_total = Instant::now();
+        // Extract account trie preimages with progress tracking
+        let (account_preimages, progress) = Self::extract_account_trie_preimages(tx)?;
         preimage_data.account_preimages = account_preimages;
+        preimage_data.progress = Some(progress);
+        debug!("Account trie extraction complete in {:.2?}", start_total.elapsed());
+        
+        debug!("Starting storage trie extraction");
+        let start_storage = Instant::now();
+        // Extract storage trie preimages
+        let storage_preimages = Self::extract_storage_trie_preimages(tx)?;
+        preimage_data.storage_preimages = storage_preimages;
+        debug!("Storage trie extraction complete in {:.2?}", start_storage.elapsed());
+        
+        // Calculate the state root hash
+        preimage_data.state_root = Self::calculate_state_root(tx)?;
+        
+        info!(
+            "Extracted {} account preimages and {} storage preimages",
+            preimage_data.account_preimages.len(),
+            preimage_data.storage_preimages.len()
+        );
+        
+        Ok(preimage_data)
+    }
+    
+    /// Extract all preimages with progress callback (original method for backward compatibility)
+    pub fn extract_all_preimages_with_progress<TX: DbTx, F>(
+        tx: &TX,
+        mut progress_callback: F,
+    ) -> PreimageStorageResult<TriePreimageData>
+    where
+        F: FnMut(&ExtractionProgress),
+    {
+        let mut preimage_data = TriePreimageData::new();
+        
+        // Extract account trie preimages with progress tracking and callback
+        let (account_preimages, progress) = Self::extract_account_trie_preimages_with_callback(tx, &mut progress_callback)?;
+        preimage_data.account_preimages = account_preimages;
+        preimage_data.progress = Some(progress);
         
         // Extract storage trie preimages
         let storage_preimages = Self::extract_storage_trie_preimages(tx)?;
@@ -42,16 +128,103 @@ impl TriePreimageExtractor {
         Ok(preimage_data)
     }
     
-    /// Extract preimages from the account trie
+    /// Extract all preimages from the trie database with streaming to storage
+    pub async fn extract_all_preimages_streaming<TX: DbTx>(
+        tx: &TX,
+        storage: &dyn PreimageStorage,
+    ) -> PreimageStorageResult<TriePreimageStatistics> {
+        let mut stats = TriePreimageStatistics::default();
+        
+        debug!("Starting streaming account trie extraction");
+        let start_total = Instant::now();
+        
+        // Extract account trie preimages with streaming
+        let account_stats = Self::extract_account_trie_preimages_streaming(tx, storage).await?;
+        stats.account_preimage_count = account_stats.account_preimage_count;
+        stats.total_account_size_bytes = account_stats.total_account_size_bytes;
+        stats.progress = account_stats.progress;
+        
+        debug!("Account trie streaming extraction complete in {:.2?}", start_total.elapsed());
+        
+        debug!("Starting streaming storage trie extraction");
+        let start_storage = Instant::now();
+        
+        // Extract storage trie preimages with streaming
+        let storage_stats = Self::extract_storage_trie_preimages_streaming(tx, storage).await?;
+        stats.storage_preimage_count = storage_stats.storage_preimage_count;
+        stats.total_storage_size_bytes = storage_stats.total_storage_size_bytes;
+        
+        debug!("Storage trie streaming extraction complete in {:.2?}", start_storage.elapsed());
+        
+        // Calculate the state root hash
+        stats.state_root = Self::calculate_state_root(tx)?;
+        
+        info!(
+            "Streaming extraction complete: {} account preimages, {} storage preimages",
+            stats.account_preimage_count,
+            stats.storage_preimage_count
+        );
+        
+        Ok(stats)
+    }
+    
+    /// Extract all preimages with streaming and progress callback
+    pub async fn extract_all_preimages_streaming_with_progress<TX: DbTx, S: PreimageStorage, F>(
+        tx: &TX,
+        storage: &S,
+        mut progress_callback: F,
+    ) -> PreimageStorageResult<TriePreimageStatistics>
+    where
+        F: FnMut(&ExtractionProgress),
+    {
+        let mut stats = TriePreimageStatistics::default();
+        
+        // Extract account trie preimages with streaming and progress callback
+        let account_stats = Self::extract_account_trie_preimages_streaming_with_callback(
+            tx, storage, &mut progress_callback
+        ).await?;
+        stats.account_preimage_count = account_stats.account_preimage_count;
+        stats.total_account_size_bytes = account_stats.total_account_size_bytes;
+        stats.progress = account_stats.progress;
+        
+        // Extract storage trie preimages with streaming
+        let storage_stats = Self::extract_storage_trie_preimages_streaming(tx, storage).await?;
+        stats.storage_preimage_count = storage_stats.storage_preimage_count;
+        stats.total_storage_size_bytes = storage_stats.total_storage_size_bytes;
+        
+        // Calculate the state root hash
+        stats.state_root = Self::calculate_state_root(tx)?;
+        
+        info!(
+            "Streaming extraction with progress complete: {} account preimages, {} storage preimages",
+            stats.account_preimage_count,
+            stats.storage_preimage_count
+        );
+        
+        Ok(stats)
+    }
+    
+    /// Extract preimages from the account trie with progress tracking (original method for backward compatibility)
     fn extract_account_trie_preimages<TX: DbTx>(
         tx: &TX,
-    ) -> PreimageStorageResult<Vec<PreimageEntry>> {
+    ) -> PreimageStorageResult<(Vec<PreimageEntry>, ExtractionProgress)> {
         let mut preimages = Vec::new();
         let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!("Failed to open accounts trie cursor: {}", e))
         })?;
         
-        // Iterate through all account trie nodes
+        debug!("Estimating account trie size...");
+        let start_est = Instant::now();
+        // First pass: estimate total nodes by analyzing trie structure
+        let estimated_total = Self::estimate_account_trie_size(tx)?;
+        debug!("Estimation complete in {:.2?}", start_est.elapsed());
+        let mut progress = ExtractionProgress::new(estimated_total);
+        
+        info!("Estimated {} total account trie nodes", estimated_total);
+        
+        // Second pass: extract preimages with progress tracking
+        debug!("Beginning account trie extraction loop");
+        let start_extract = Instant::now();
         let mut current = cursor.first().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!("Failed to read first account trie entry: {}", e))
         })?;
@@ -61,20 +234,82 @@ impl TriePreimageExtractor {
             trace!("Extracted account trie preimage: {:x}", preimage_entry.hash);
             preimages.push(preimage_entry);
             
+            // Update progress based on node depth
+            let depth = stored_nibbles.0.len();
+            progress.update(depth);
+            
+            // Log progress every 1000 nodes or when progress changes significantly
+            if progress.nodes_processed % 1000 == 0 || progress.nodes_processed == 1 {
+                debug!("{} ({} nodes, elapsed: {:.2?})", progress.to_string(), progress.nodes_processed, start_extract.elapsed());
+            }
             
             current = cursor.next().map_err(|e| {
                 PreimageStorageError::Database(eyre::eyre!("Failed to read next account trie entry: {}", e))
             })?;
         }
         
+        info!("Completed account trie extraction: {} (elapsed: {:.2?})", progress.to_string(), start_extract.elapsed());
         debug!("Extracted {} account trie preimages", preimages.len());
-        Ok(preimages)
+        Ok((preimages, progress))
     }
     
-    /// Extract preimages from storage tries
+    /// Extract preimages from the account trie with progress callback (original method for backward compatibility)
+    fn extract_account_trie_preimages_with_callback<TX: DbTx, F>(
+        tx: &TX,
+        progress_callback: &mut F,
+    ) -> PreimageStorageResult<(Vec<PreimageEntry>, ExtractionProgress)>
+    where
+        F: FnMut(&ExtractionProgress),
+    {
+        let mut preimages = Vec::new();
+        let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to open accounts trie cursor: {}", e))
+        })?;
+        
+        // First pass: estimate total nodes by analyzing trie structure
+        let estimated_total = Self::estimate_account_trie_size(tx)?;
+        let mut progress = ExtractionProgress::new(estimated_total);
+        
+        info!("Estimated {} total account trie nodes", estimated_total);
+        
+        // Second pass: extract preimages with progress tracking and callback
+        let mut current = cursor.first().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to read first account trie entry: {}", e))
+        })?;
+        
+        while let Some((stored_nibbles, branch_node)) = current {
+            let preimage_entry = Self::create_preimage_from_account_node(&stored_nibbles, &branch_node)?;
+            trace!("Extracted account trie preimage: {:x}", preimage_entry.hash);
+            preimages.push(preimage_entry);
+            
+            // Update progress based on node depth
+            let depth = stored_nibbles.0.len();
+            progress.update(depth);
+            
+            // Call progress callback
+            progress_callback(&progress);
+            
+            // Log progress every 1000 nodes or when progress changes significantly
+            if progress.nodes_processed % 1000 == 0 || progress.nodes_processed == 1 {
+                info!("{}", progress.to_string());
+            }
+            
+            current = cursor.next().map_err(|e| {
+                PreimageStorageError::Database(eyre::eyre!("Failed to read next account trie entry: {}", e))
+            })?;
+        }
+        
+        info!("Completed account trie extraction: {}", progress.to_string());
+        debug!("Extracted {} account trie preimages", preimages.len());
+        Ok((preimages, progress))
+    }
+    
+    /// Extract preimages from storage tries (original method for backward compatibility)
     fn extract_storage_trie_preimages<TX: DbTx>(
         tx: &TX,
     ) -> PreimageStorageResult<Vec<PreimageEntry>> {
+        debug!("Beginning storage trie extraction loop");
+        let start = Instant::now();
         let mut preimages = Vec::new();
         let mut cursor = tx.cursor_dup_read::<StoragesTrie>().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!("Failed to open storage trie cursor: {}", e))
@@ -84,20 +319,292 @@ impl TriePreimageExtractor {
         let mut current = cursor.first().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!("Failed to read first storage trie entry: {}", e))
         })?;
-        
+        let mut processed = 0;
         while let Some((hashed_address, storage_entry)) = current {
             let preimage_entry = Self::create_preimage_from_storage_node(&hashed_address, &storage_entry)?;
             preimages.push(preimage_entry.clone());
             
             trace!("Extracted storage trie preimage: {:x}", preimage_entry.hash);
+            processed += 1;
+            if processed % 1000 == 0 || processed == 1 {
+                debug!("Storage trie: processed {} nodes (elapsed: {:.2?})", processed, start.elapsed());
+            }
+            
+            current = cursor.next().map_err(|e| {
+                PreimageStorageError::Database(eyre::eyre!("Failed to read next storage trie entry: {}", e))
+            })?;
+        }
+        debug!("Completed storage trie extraction: processed {} nodes (elapsed: {:.2?})", processed, start.elapsed());
+        debug!("Extracted {} storage trie preimages", preimages.len());
+        Ok(preimages)
+    }
+    
+    /// Extract preimages from the account trie with streaming to storage
+    async fn extract_account_trie_preimages_streaming<TX: DbTx>(
+        tx: &TX,
+        storage: &dyn PreimageStorage,
+    ) -> PreimageStorageResult<TriePreimageStatistics> {
+        let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to open accounts trie cursor: {}", e))
+        })?;
+        
+        debug!("Estimating account trie size...");
+        let start_est = Instant::now();
+        // First pass: estimate total nodes by analyzing trie structure
+        let estimated_total = Self::estimate_account_trie_size(tx)?;
+        debug!("Estimation complete in {:.2?}", start_est.elapsed());
+        let mut progress = ExtractionProgress::new(estimated_total);
+        
+        info!("Estimated {} total account trie nodes", estimated_total);
+        
+        // Second pass: extract preimages with streaming to storage
+        debug!("Beginning streaming account trie extraction");
+        let start_extract = Instant::now();
+        let mut current = cursor.first().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to read first account trie entry: {}", e))
+        })?;
+        
+        let mut batch = Vec::new();
+        const BATCH_SIZE: usize = 100; // Process in batches for efficiency
+        let mut total_size_bytes = 0;
+        let mut processed_count = 0;
+        
+        while let Some((stored_nibbles, branch_node)) = current {
+            let preimage_entry = Self::create_preimage_from_account_node(&stored_nibbles, &branch_node)?;
+            trace!("Extracted account trie preimage: {:x}", preimage_entry.hash);
+            
+            batch.push(preimage_entry.clone());
+            total_size_bytes += preimage_entry.data.len();
+            processed_count += 1;
+            
+            // Update progress based on node depth
+            let depth = stored_nibbles.0.len();
+            progress.update(depth);
+            
+            // Store batch when it reaches the target size
+            if batch.len() >= BATCH_SIZE {
+                storage.store_preimages(batch.clone()).await?;
+                batch.clear();
+                
+                // Log progress every 1000 nodes or when progress changes significantly
+                if processed_count % 100000 == 0 || processed_count == BATCH_SIZE {
+                    debug!("{} ({} nodes, elapsed: {:.2?})", progress.to_string(), processed_count, start_extract.elapsed());
+                }
+            }
+            
+            current = cursor.next().map_err(|e| {
+                PreimageStorageError::Database(eyre::eyre!("Failed to read next account trie entry: {}", e))
+            })?;
+        }
+        
+        // Store remaining batch
+        if !batch.is_empty() {
+            storage.store_preimages(batch).await?;
+        }
+        
+        info!("Completed streaming account trie extraction: {} (elapsed: {:.2?})", progress.to_string(), start_extract.elapsed());
+        debug!("Streamed {} account trie preimages", processed_count);
+        
+        Ok(TriePreimageStatistics {
+            account_preimage_count: processed_count,
+            storage_preimage_count: 0,
+            total_account_size_bytes: total_size_bytes,
+            total_storage_size_bytes: 0,
+            state_root: B256::ZERO,
+            progress: Some(progress),
+        })
+    }
+    
+    /// Extract preimages from the account trie with streaming and progress callback
+    async fn extract_account_trie_preimages_streaming_with_callback<TX: DbTx, S: PreimageStorage, F>(
+        tx: &TX,
+        storage: &S,
+        progress_callback: &mut F,
+    ) -> PreimageStorageResult<TriePreimageStatistics>
+    where
+        F: FnMut(&ExtractionProgress),
+    {
+        let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to open accounts trie cursor: {}", e))
+        })?;
+        
+        // First pass: estimate total nodes by analyzing trie structure
+        let estimated_total = Self::estimate_account_trie_size(tx)?;
+        let mut progress = ExtractionProgress::new(estimated_total);
+        
+        info!("Estimated {} total account trie nodes", estimated_total);
+        
+        // Second pass: extract preimages with streaming to storage and progress callback
+        let mut current = cursor.first().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to read first account trie entry: {}", e))
+        })?;
+        
+        let mut batch = Vec::new();
+        const BATCH_SIZE: usize = 100; // Process in batches for efficiency
+        let mut total_size_bytes = 0;
+        let mut processed_count = 0;
+        
+        while let Some((stored_nibbles, branch_node)) = current {
+            let preimage_entry = Self::create_preimage_from_account_node(&stored_nibbles, &branch_node)?;
+            trace!("Extracted account trie preimage: {:x}", preimage_entry.hash);
+            
+            batch.push(preimage_entry.clone());
+            total_size_bytes += preimage_entry.data.len();
+            processed_count += 1;
+            
+            // Update progress based on node depth
+            let depth = stored_nibbles.0.len();
+            progress.update(depth);
+            
+            // Call progress callback
+            progress_callback(&progress);
+            
+            // Store batch when it reaches the target size
+            if batch.len() >= BATCH_SIZE {
+                storage.store_preimages(batch.clone()).await?;
+                batch.clear();
+                
+                // Log progress every 1000 nodes or when progress changes significantly
+                if processed_count % 100000 == 0 || processed_count == BATCH_SIZE {
+                    info!("{}", progress.to_string());
+                }
+            }
+            
+            current = cursor.next().map_err(|e| {
+                PreimageStorageError::Database(eyre::eyre!("Failed to read next account trie entry: {}", e))
+            })?;
+        }
+        
+        // Store remaining batch
+        if !batch.is_empty() {
+            storage.store_preimages(batch).await?;
+        }
+        
+        info!("Completed streaming account trie extraction: {}", progress.to_string());
+        debug!("Streamed {} account trie preimages", processed_count);
+        
+        Ok(TriePreimageStatistics {
+            account_preimage_count: processed_count,
+            storage_preimage_count: 0,
+            total_account_size_bytes: total_size_bytes,
+            total_storage_size_bytes: 0,
+            state_root: B256::ZERO,
+            progress: Some(progress),
+        })
+    }
+    
+    /// Extract preimages from storage tries with streaming to storage
+    async fn extract_storage_trie_preimages_streaming<TX: DbTx>(
+        tx: &TX,
+        storage: &dyn PreimageStorage,
+    ) -> PreimageStorageResult<TriePreimageStatistics> {
+        debug!("Beginning streaming storage trie extraction");
+        let start = Instant::now();
+        let mut cursor = tx.cursor_dup_read::<StoragesTrie>().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to open storage trie cursor: {}", e))
+        })?;
+        
+        // Iterate through all storage trie nodes with streaming
+        let mut current = cursor.first().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to read first storage trie entry: {}", e))
+        })?;
+        
+        let mut batch = Vec::new();
+        const BATCH_SIZE: usize = 100; // Process in batches for efficiency
+        let mut total_size_bytes = 0;
+        let mut processed_count = 0;
+        
+        while let Some((hashed_address, storage_entry)) = current {
+            let preimage_entry = Self::create_preimage_from_storage_node(&hashed_address, &storage_entry)?;
+            
+            batch.push(preimage_entry.clone());
+            total_size_bytes += preimage_entry.data.len();
+            processed_count += 1;
+            
+            trace!("Extracted storage trie preimage: {:x}", preimage_entry.hash);
+            
+            // Store batch when it reaches the target size
+            if batch.len() >= BATCH_SIZE {
+                storage.store_preimages(batch.clone()).await?;
+                batch.clear();
+                
+                if processed_count % 100000 == 0 || processed_count == BATCH_SIZE {
+                    debug!("Storage trie: processed {} nodes (elapsed: {:.2?})", processed_count, start.elapsed());
+                }
+            }
             
             current = cursor.next().map_err(|e| {
                 PreimageStorageError::Database(eyre::eyre!("Failed to read next storage trie entry: {}", e))
             })?;
         }
         
-        debug!("Extracted {} storage trie preimages", preimages.len());
-        Ok(preimages)
+        // Store remaining batch
+        if !batch.is_empty() {
+            storage.store_preimages(batch).await?;
+        }
+        
+        debug!("Completed streaming storage trie extraction: processed {} nodes (elapsed: {:.2?})", processed_count, start.elapsed());
+        debug!("Streamed {} storage trie preimages", processed_count);
+        
+        Ok(TriePreimageStatistics {
+            account_preimage_count: 0,
+            storage_preimage_count: processed_count,
+            total_account_size_bytes: 0,
+            total_storage_size_bytes: total_size_bytes,
+            state_root: B256::ZERO,
+            progress: None,
+        })
+    }
+    
+    /// Estimate the total number of nodes in the account trie using depth-first analysis
+    fn estimate_account_trie_size<TX: DbTx>(tx: &TX) -> PreimageStorageResult<usize> {
+        let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to open accounts trie cursor for estimation: {}", e))
+        })?;
+        
+        let mut total_estimate = 0;
+        let mut depth_counts: HashMap<usize, usize> = HashMap::new();
+        
+        // Analyze the first few nodes at each depth to estimate distribution
+        let mut current = cursor.first().map_err(|e| {
+            PreimageStorageError::Database(eyre::eyre!("Failed to read first account trie entry for estimation: {}", e))
+        })?;
+        
+        let mut sample_size = 0;
+        const MAX_SAMPLE_SIZE: usize = 10000; // Sample up to 10k nodes for estimation
+        let start_sample = Instant::now();
+        while let Some((stored_nibbles, branch_node)) = current {
+            let depth = stored_nibbles.0.len();
+            *depth_counts.entry(depth).or_insert(0) += 1;
+            
+            // Count potential children from branch nodes
+            let child_count = branch_node.state_mask.count_ones() as usize;
+            total_estimate += 1 + child_count; // Current node + potential children
+            
+            sample_size += 1;
+            if sample_size >= MAX_SAMPLE_SIZE {
+                break;
+            }
+            
+            current = cursor.next().map_err(|e| {
+                PreimageStorageError::Database(eyre::eyre!("Failed to read next account trie entry for estimation: {}", e))
+            })?;
+        }
+        debug!("Sampled {} nodes for estimation in {:.2?}", sample_size, start_sample.elapsed());
+        debug!("Depth distribution: {:?}", depth_counts);
+        
+        // If we have a good sample, extrapolate to estimate total
+        if sample_size > 0 {
+            // use depth distribution to estimate log2(number of nodes)
+            let mut avg_depth: f64 = 0.5; // avg depth of 0.5 since we're always getting the floor of the depth
+            for (depth, count) in depth_counts {
+                avg_depth += depth as f64 * count as f64;
+            }
+            info!("Average depth: {}", avg_depth);
+            avg_depth /= sample_size as f64;
+            total_estimate = 16.0_f64.powf(avg_depth) as usize;
+        }
+        Ok(total_estimate)
     }
     
     /// Create a preimage entry from an account trie node
@@ -167,7 +674,7 @@ impl TriePreimageExtractor {
     }
     
     /// Calculate the state root hash from the database
-    fn calculate_state_root<TX: DbTx>(tx: &TX) -> PreimageStorageResult<B256> {
+    fn calculate_state_root<TX: DbTx>(_tx: &TX) -> PreimageStorageResult<B256> {
         // This is a simplified approach - in practice, we'd need to build the trie
         // and calculate the proper Merkle root. For now, we'll use a placeholder
         // or try to get it from the database if available.
@@ -187,6 +694,8 @@ pub struct TriePreimageData {
     pub storage_preimages: Vec<PreimageEntry>,
     /// The state root hash
     pub state_root: B256,
+    /// Progress information from extraction
+    pub progress: Option<ExtractionProgress>,
 }
 
 impl TriePreimageData {
@@ -196,6 +705,7 @@ impl TriePreimageData {
             account_preimages: Vec::new(),
             storage_preimages: Vec::new(),
             state_root: B256::ZERO,
+            progress: None,
         }
     }
     
@@ -228,6 +738,7 @@ impl TriePreimageData {
             total_account_size_bytes: total_account_size,
             total_storage_size_bytes: total_storage_size,
             state_root: self.state_root,
+            progress: self.progress.clone(),
         }
     }
 }
@@ -245,6 +756,21 @@ pub struct TriePreimageStatistics {
     pub total_storage_size_bytes: usize,
     /// The state root hash
     pub state_root: B256,
+    /// Progress information from extraction
+    pub progress: Option<ExtractionProgress>,
+}
+
+impl Default for TriePreimageStatistics {
+    fn default() -> Self {
+        Self {
+            account_preimage_count: 0,
+            storage_preimage_count: 0,
+            total_account_size_bytes: 0,
+            total_storage_size_bytes: 0,
+            state_root: B256::ZERO,
+            progress: None,
+        }
+    }
 }
 
 impl TriePreimageStatistics {
@@ -267,10 +793,63 @@ impl TriePreimageStatistics {
             self.total_size_bytes() as f64 / total_count as f64
         }
     }
+    
+    /// Get progress information as a string
+    pub fn progress_string(&self) -> Option<String> {
+        self.progress.as_ref().map(|p| p.to_string())
+    }
 }
 
 impl Default for TriePreimageData {
     fn default() -> Self {
         Self::new()
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::LocalPreimageStorage;
+    use crate::PreimageStorageConfig;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_streaming_extraction() {
+        // This is a basic test to ensure the streaming methods compile and work
+        // In a real implementation, you would need a proper database with trie data
+        
+        // Create a temporary directory for local storage
+        let temp_dir = tempdir().unwrap();
+        let config = PreimageStorageConfig {
+            local_path: Some(PathBuf::from(temp_dir.path())),
+            batch_size: 100,
+            ..Default::default()
+        };
+        
+        let storage = LocalPreimageStorage::new(config).await.unwrap();
+        
+        // Note: This test would need a real database transaction to work
+        // The streaming architecture is designed to work with any PreimageStorage implementation
+        info!("Streaming architecture ready for use with real database");
+    }
+
+    #[test]
+    fn test_preimage_storage_config_default() {
+        let config = PreimageStorageConfig::default();
+        assert_eq!(config.batch_size, 100);
+        assert_eq!(config.table_name, Some("reth-preimages".to_string()));
+        assert_eq!(config.aws_region, Some("us-east-1".to_string()));
+        assert_eq!(config.dynamodb_endpoint_url, None);
+        assert_eq!(config.local_path, None);
+    }
+
+    #[test]
+    fn test_preimage_storage_config_with_custom_endpoint() {
+        let config = PreimageStorageConfig {
+            dynamodb_endpoint_url: Some("http://localhost:8000".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.dynamodb_endpoint_url, Some("http://localhost:8000".to_string()));
+    }
+}

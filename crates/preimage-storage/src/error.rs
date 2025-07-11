@@ -26,6 +26,10 @@ pub enum PreimageStorageError {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// Invalid input parameters
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     /// Preimage not found
     #[error("Preimage not found for hash: {0}")]
     PreimageNotFound(B256),
