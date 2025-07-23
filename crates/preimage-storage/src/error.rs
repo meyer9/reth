@@ -52,4 +52,4 @@ pub enum PreimageStorageError {
 }
 
 /// Result type for preimage storage operations
-pub type PreimageStorageResult<T> = Result<T, PreimageStorageError>; 
+pub type PreimageStorageResult<T> = Result<T, PreimageStorageError>;

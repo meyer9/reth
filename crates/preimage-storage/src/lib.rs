@@ -4,9 +4,9 @@
 //! with support for various backends including DynamoDB.
 
 pub mod error;
-pub mod traits;
 pub mod extractor;
 pub mod historical_extractor;
+pub mod traits;
 
 #[cfg(feature = "dynamodb")]
 pub mod dynamodb;
@@ -19,9 +19,11 @@ pub use traits::{PreimageStorage, StorageStatistics};
 #[cfg(feature = "dynamodb")]
 pub use dynamodb::DynamoDbPreimageStorage;
 
+pub use extractor::{TriePreimageData, TriePreimageExtractor, TriePreimageStatistics};
+pub use historical_extractor::{
+    HistoricalExtractionProgress, HistoricalExtractionStatistics, HistoricalPreimageExtractor,
+};
 pub use local::LocalPreimageStorage;
-pub use extractor::{TriePreimageExtractor, TriePreimageData, TriePreimageStatistics};
-pub use historical_extractor::{HistoricalPreimageExtractor, HistoricalExtractionProgress, HistoricalExtractionStatistics};
 
 /// A preimage entry containing a hash and its corresponding data
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -64,4 +66,4 @@ impl Default for PreimageStorageConfig {
             local_path: None,
         }
     }
-} 
+}

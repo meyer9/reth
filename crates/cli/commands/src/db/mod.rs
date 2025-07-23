@@ -11,8 +11,8 @@ use std::{
 mod checksum;
 mod clear;
 mod diff;
-mod dump_preimages;
 mod dump_historical_preimages;
+mod dump_preimages;
 mod get;
 mod list;
 mod stats;

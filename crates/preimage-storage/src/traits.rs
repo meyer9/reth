@@ -56,22 +56,10 @@ pub struct StorageStatistics {
 
 impl StorageStatistics {
     /// Create new storage statistics
-    pub fn new(
-        total_preimages: u64,
-        total_size_bytes: u64,
-        backend_type: String,
-    ) -> Self {
-        let average_size_bytes = if total_preimages > 0 {
-            total_size_bytes / total_preimages
-        } else {
-            0
-        };
+    pub fn new(total_preimages: u64, total_size_bytes: u64, backend_type: String) -> Self {
+        let average_size_bytes =
+            if total_preimages > 0 { total_size_bytes / total_preimages } else { 0 };
 
-        Self {
-            total_preimages,
-            total_size_bytes,
-            average_size_bytes,
-            backend_type,
-        }
+        Self { total_preimages, total_size_bytes, average_size_bytes, backend_type }
     }
-} 
+}

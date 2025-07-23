@@ -8,7 +8,7 @@ use alloy_primitives::B256;
 use async_trait::async_trait;
 use aws_config::Region;
 use aws_sdk_dynamodb::{
-    types::{AttributeValue, Select, WriteRequest, PutRequest, DeleteRequest},
+    types::{AttributeValue, DeleteRequest, PutRequest, Select, WriteRequest},
     Client,
 };
 use std::collections::HashMap;
@@ -29,33 +29,30 @@ impl DynamoDbPreimageStorage {
         })?;
 
         // Load AWS configuration with optional custom endpoint
-        let mut aws_config_builder = aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
-        
+        let mut aws_config_builder =
+            aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
+
         // Set region if provided
         if let Some(region) = config.aws_region {
             aws_config_builder = aws_config_builder.region(Region::new(region));
         }
-        
+
         let aws_config = aws_config_builder.load().await;
-        
+
         // Create client with optional custom endpoint
         let client = if let Some(endpoint_url) = config.dynamodb_endpoint_url {
             info!("Using custom DynamoDB endpoint: {}", endpoint_url);
             Client::from_conf(
                 aws_sdk_dynamodb::config::Builder::from(&aws_config)
                     .endpoint_url(endpoint_url)
-                    .build()
+                    .build(),
             )
         } else {
             Client::new(&aws_config)
         };
 
         // Verify table exists
-        let storage = Self {
-            client,
-            table_name,
-            batch_size: config.batch_size,
-        };
+        let storage = Self { client, table_name, batch_size: config.batch_size };
 
         storage.ensure_table_exists().await?;
 
@@ -83,37 +80,44 @@ impl DynamoDbPreimageStorage {
     /// Convert a preimage entry to DynamoDB item
     fn entry_to_item(&self, entry: &PreimageEntry) -> HashMap<String, AttributeValue> {
         let mut item = HashMap::new();
-        
+
         // Use hex-encoded hash as primary key
         item.insert("hash".to_string(), AttributeValue::S(format!("{:x}", entry.hash)));
-        
+
         // Store data as binary
         item.insert("data".to_string(), AttributeValue::B(entry.data.to_vec().into()));
-        
+
         // Add metadata
         item.insert("size".to_string(), AttributeValue::N(entry.data.len().to_string()));
-        item.insert("created_at".to_string(), AttributeValue::N(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .to_string()
-        ));
-        
+        item.insert(
+            "created_at".to_string(),
+            AttributeValue::N(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string(),
+            ),
+        );
+
         item
     }
 
     /// Convert DynamoDB item to preimage entry
-    fn item_to_entry(&self, item: &HashMap<String, AttributeValue>) -> PreimageStorageResult<PreimageEntry> {
-        let hash_str = item.get("hash")
+    fn item_to_entry(
+        &self,
+        item: &HashMap<String, AttributeValue>,
+    ) -> PreimageStorageResult<PreimageEntry> {
+        let hash_str = item
+            .get("hash")
             .and_then(|v| v.as_s().ok())
             .ok_or_else(|| PreimageStorageError::Storage("Missing hash field".to_string()))?;
 
-        let hash = B256::from_str(hash_str).map_err(|e| {
-            PreimageStorageError::Storage(format!("Invalid hash format: {}", e))
-        })?;
+        let hash = B256::from_str(hash_str)
+            .map_err(|e| PreimageStorageError::Storage(format!("Invalid hash format: {}", e)))?;
 
-        let data = item.get("data")
+        let data = item
+            .get("data")
             .and_then(|v| v.as_b().ok().cloned())
             .ok_or_else(|| PreimageStorageError::Storage("Missing data field".to_string()))?;
 
@@ -121,9 +125,12 @@ impl DynamoDbPreimageStorage {
     }
 
     /// Store preimages in batches
-    async fn store_preimages_batch(&self, entries: Vec<PreimageEntry>) -> PreimageStorageResult<()> {
+    async fn store_preimages_batch(
+        &self,
+        entries: Vec<PreimageEntry>,
+    ) -> PreimageStorageResult<()> {
         let mut chunks = entries.chunks(self.batch_size);
-        
+
         for chunk in chunks {
             let write_requests: Vec<WriteRequest> = chunk
                 .iter()
@@ -133,7 +140,7 @@ impl DynamoDbPreimageStorage {
                             PutRequest::builder()
                                 .set_item(Some(self.entry_to_item(entry)))
                                 .build()
-                                .unwrap()
+                                .unwrap(),
                         )
                         .build()
                 })
@@ -142,7 +149,11 @@ impl DynamoDbPreimageStorage {
             let mut request_items = HashMap::new();
             request_items.insert(self.table_name.clone(), write_requests);
 
-            info!("DynamoDB: Storing {} preimages in batch of size {}", chunk.len(), self.batch_size);
+            info!(
+                "DynamoDB: Storing {} preimages in batch of size {}",
+                chunk.len(),
+                self.batch_size
+            );
             self.client
                 .batch_write_item()
                 .set_request_items(Some(request_items))
@@ -192,15 +203,14 @@ impl PreimageStorage for DynamoDbPreimageStorage {
         let mut key = HashMap::new();
         key.insert("hash".to_string(), AttributeValue::S(format!("{:x}", hash)));
 
-        let response = self.client
+        let response = self
+            .client
             .get_item()
             .table_name(&self.table_name)
             .set_key(Some(key))
             .send()
             .await
-            .map_err(|e| {
-                PreimageStorageError::Storage(format!("Failed to get preimage: {}", e))
-            })?;
+            .map_err(|e| PreimageStorageError::Storage(format!("Failed to get preimage: {}", e)))?;
 
         if let Some(item) = response.item {
             Ok(Some(self.item_to_entry(&item)?))
@@ -229,7 +239,8 @@ impl PreimageStorage for DynamoDbPreimageStorage {
             let mut request_items = HashMap::new();
             request_items.insert(self.table_name.clone(), keys_and_attributes);
 
-            let response = self.client
+            let response = self
+                .client
                 .batch_get_item()
                 .set_request_items(Some(request_items))
                 .send()
@@ -257,7 +268,8 @@ impl PreimageStorage for DynamoDbPreimageStorage {
         let mut key = HashMap::new();
         key.insert("hash".to_string(), AttributeValue::S(format!("{:x}", hash)));
 
-        let response = self.client
+        let response = self
+            .client
             .get_item()
             .table_name(&self.table_name)
             .set_key(Some(key))
@@ -296,13 +308,10 @@ impl PreimageStorage for DynamoDbPreimageStorage {
                 .map(|hash| {
                     let mut key = HashMap::new();
                     key.insert("hash".to_string(), AttributeValue::S(format!("{:x}", hash)));
-                    
+
                     WriteRequest::builder()
                         .delete_request(
-                            DeleteRequest::builder()
-                                .set_key(Some(key))
-                                .build()
-                                .unwrap()
+                            DeleteRequest::builder().set_key(Some(key)).build().unwrap(),
                         )
                         .build()
                 })
@@ -328,7 +337,8 @@ impl PreimageStorage for DynamoDbPreimageStorage {
     }
 
     async fn count_preimages(&self) -> PreimageStorageResult<u64> {
-        let response = self.client
+        let response = self
+            .client
             .scan()
             .table_name(&self.table_name)
             .select(Select::Count)
@@ -346,10 +356,8 @@ impl PreimageStorage for DynamoDbPreimageStorage {
         let mut last_evaluated_key = None;
 
         loop {
-            let mut scan_request = self.client
-                .scan()
-                .table_name(&self.table_name)
-                .projection_expression("hash");
+            let mut scan_request =
+                self.client.scan().table_name(&self.table_name).projection_expression("hash");
 
             if let Some(key) = last_evaluated_key {
                 scan_request = scan_request.set_exclusive_start_key(Some(key));
@@ -382,7 +390,7 @@ impl PreimageStorage for DynamoDbPreimageStorage {
 
     async fn clear_all_preimages(&self) -> PreimageStorageResult<()> {
         warn!("Clearing all preimages from DynamoDB table '{}'", self.table_name);
-        
+
         let hashes = self.list_preimage_hashes().await?;
         if !hashes.is_empty() {
             self.delete_preimages(&hashes).await?;
@@ -392,7 +400,8 @@ impl PreimageStorage for DynamoDbPreimageStorage {
     }
 
     async fn get_statistics(&self) -> PreimageStorageResult<StorageStatistics> {
-        let response = self.client
+        let response = self
+            .client
             .scan()
             .table_name(&self.table_name)
             .select(Select::AllAttributes)
@@ -407,7 +416,7 @@ impl PreimageStorage for DynamoDbPreimageStorage {
 
         if let Some(items) = response.items {
             total_preimages = items.len() as u64;
-            
+
             for item in items {
                 if let Some(size_attr) = item.get("size") {
                     if let Ok(size_str) = size_attr.as_n() {
@@ -419,11 +428,7 @@ impl PreimageStorage for DynamoDbPreimageStorage {
             }
         }
 
-        Ok(StorageStatistics::new(
-            total_preimages,
-            total_size_bytes,
-            "DynamoDB".to_string(),
-        ))
+        Ok(StorageStatistics::new(total_preimages, total_size_bytes, "DynamoDB".to_string()))
     }
 }
 
@@ -434,18 +439,15 @@ trait B256Ext {
 
 impl B256Ext for B256 {
     fn from_str(s: &str) -> Result<B256, PreimageStorageError> {
-        let bytes = hex::decode(s).map_err(|e| {
-            PreimageStorageError::Storage(format!("Invalid hex string: {}", e))
-        })?;
-        
+        let bytes = hex::decode(s)
+            .map_err(|e| PreimageStorageError::Storage(format!("Invalid hex string: {}", e)))?;
+
         if bytes.len() != 32 {
-            return Err(PreimageStorageError::Storage(
-                "Hash must be exactly 32 bytes".to_string()
-            ));
+            return Err(PreimageStorageError::Storage("Hash must be exactly 32 bytes".to_string()));
         }
-        
+
         let mut array = [0u8; 32];
         array.copy_from_slice(&bytes);
         Ok(B256::from(array))
     }
-} 
+}

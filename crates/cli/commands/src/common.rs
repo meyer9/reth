@@ -142,8 +142,8 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
         //     .check_consistency(&factory.provider()?, has_receipt_pruning)?
         // {
         //     if factory.db_ref().is_read_only()? {
-        //         warn!(target: "reth::cli", ?unwind_target, "Inconsistent storage. Restart node to heal.");
-        //         return Ok(factory)
+        //         warn!(target: "reth::cli", ?unwind_target, "Inconsistent storage. Restart node to
+        // heal.");         return Ok(factory)
         //     }
 
         //     // Highly unlikely to happen, and given its destructive nature, it's better to panic
@@ -151,10 +151,11 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
         //     assert_ne!(
         //         unwind_target,
         //         PipelineTarget::Unwind(0),
-        //         "A static file <> database inconsistency was found that would trigger an unwind to block 0"
-        //     );
+        //         "A static file <> database inconsistency was found that would trigger an unwind
+        // to block 0"     );
 
-        //     info!(target: "reth::cli", unwind_target = %unwind_target, "Executing an unwind after a failed storage consistency check.");
+        //     info!(target: "reth::cli", unwind_target = %unwind_target, "Executing an unwind after
+        // a failed storage consistency check.");
 
         //     let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
 
