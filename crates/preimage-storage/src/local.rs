@@ -56,11 +56,11 @@ impl LocalPreimageStorage {
         Ok(())
     }
 
-    /// Read preimage from file
+    /// Read preimage data from file
     async fn read_preimage_file(
         &self,
         hash: &B256,
-    ) -> PreimageStorageResult<Option<PreimageEntry>> {
+    ) -> PreimageStorageResult<Option<Vec<u8>>> {
         let file_path = self.get_file_path(hash);
 
         if !file_path.exists() {
@@ -82,7 +82,7 @@ impl LocalPreimageStorage {
         }
 
         let data = buffer[32..].to_vec();
-        Ok(Some(PreimageEntry::new(*hash, data.into())))
+        Ok(Some(data))
     }
 
     /// Write preimage to file
@@ -189,16 +189,16 @@ impl PreimageStorage for LocalPreimageStorage {
         Ok(())
     }
 
-    async fn get_preimage(&self, hash: &B256) -> PreimageStorageResult<Option<PreimageEntry>> {
+    async fn get_preimage(&self, hash: &B256) -> PreimageStorageResult<Option<Vec<u8>>> {
         self.read_preimage_file(hash).await
     }
 
-    async fn get_preimages(&self, hashes: &[B256]) -> PreimageStorageResult<Vec<PreimageEntry>> {
+    async fn get_preimages(&self, hashes: &[B256]) -> PreimageStorageResult<Vec<Vec<u8>>> {
         let mut results = Vec::new();
 
         for hash in hashes {
-            if let Some(entry) = self.read_preimage_file(hash).await? {
-                results.push(entry);
+            if let Some(data) = self.read_preimage_file(hash).await? {
+                results.push(data);
             }
         }
 

@@ -5,7 +5,6 @@
 
 pub mod error;
 pub mod extractor;
-pub mod historical_extractor;
 pub mod traits;
 
 #[cfg(feature = "dynamodb")]
@@ -14,15 +13,13 @@ pub mod dynamodb;
 pub mod local;
 
 pub use error::{PreimageStorageError, PreimageStorageResult};
+use reth_trie::Nibbles;
 pub use traits::{PreimageStorage, StorageStatistics};
 
 #[cfg(feature = "dynamodb")]
 pub use dynamodb::DynamoDbPreimageStorage;
 
 pub use extractor::{TriePreimageData, TriePreimageExtractor, TriePreimageStatistics};
-pub use historical_extractor::{
-    HistoricalExtractionProgress, HistoricalExtractionStatistics, HistoricalPreimageExtractor,
-};
 pub use local::LocalPreimageStorage;
 
 /// A preimage entry containing a hash and its corresponding data
@@ -30,14 +27,16 @@ pub use local::LocalPreimageStorage;
 pub struct PreimageEntry {
     /// The hash of the data
     pub hash: alloy_primitives::B256,
+    // The path of the node in the trie (should help with pruning old preimages)
+    pub path: Nibbles,
     /// The original data that produces the hash
     pub data: Vec<u8>,
 }
 
 impl PreimageEntry {
     /// Create a new preimage entry
-    pub fn new(hash: alloy_primitives::B256, data: Vec<u8>) -> Self {
-        Self { hash, data }
+    pub fn new(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
+        Self { hash, path, data }
     }
 }
 

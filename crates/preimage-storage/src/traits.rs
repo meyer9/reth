@@ -14,10 +14,10 @@ pub trait PreimageStorage: Send + Sync {
     async fn store_preimages(&self, entries: Vec<PreimageEntry>) -> PreimageStorageResult<()>;
 
     /// Retrieve a preimage by its hash
-    async fn get_preimage(&self, hash: &B256) -> PreimageStorageResult<Option<PreimageEntry>>;
+    async fn get_preimage(&self, hash: &B256) -> PreimageStorageResult<Option<Vec<u8>>>;
 
     /// Retrieve multiple preimages by their hashes
-    async fn get_preimages(&self, hashes: &[B256]) -> PreimageStorageResult<Vec<PreimageEntry>>;
+    async fn get_preimages(&self, hashes: &[B256]) -> PreimageStorageResult<Vec<Vec<u8>>>;
 
     /// Check if a preimage exists for the given hash
     async fn contains_preimage(&self, hash: &B256) -> PreimageStorageResult<bool>;

@@ -706,7 +706,7 @@ impl TriePreimageExtractor {
         // Calculate the hash of the node data
         let hash = keccak256(&node_data);
 
-        Ok(PreimageEntry::new(hash, node_data.into()))
+        Ok(PreimageEntry::new(hash, stored_nibbles.0, node_data.into()))
     }
 
     /// Create a preimage entry from a storage trie node
@@ -720,7 +720,7 @@ impl TriePreimageExtractor {
         // Calculate the hash of the node data
         let hash = keccak256(&node_data);
 
-        Ok(PreimageEntry::new(hash, node_data.into()))
+        Ok(PreimageEntry::new(hash, storage_entry.nibbles.0, node_data.into()))
     }
 
     /// Encode account trie node for hashing

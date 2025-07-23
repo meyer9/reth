@@ -112,7 +112,6 @@ impl<C: ChainSpecParser> Command<C> {
         info!("  Storage preimages: {}", stats.storage_preimage_count);
         info!("  Total size: {} bytes", stats.total_size_bytes());
         info!("  Average size: {:.2} bytes", stats.average_preimage_size());
-        info!("  State root: {:x}", stats.state_root);
 
         // Get final storage statistics
         let storage_stats = storage.get_statistics().await?;

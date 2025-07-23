@@ -11,7 +11,6 @@ use std::{
 mod checksum;
 mod clear;
 mod diff;
-mod dump_historical_preimages;
 mod dump_preimages;
 mod get;
 mod list;
@@ -52,8 +51,6 @@ pub enum Subcommands<C: ChainSpecParser> {
     Clear(clear::Command),
     /// Dumps the current trie as preimages
     DumpPreimages(dump_preimages::Command<C>),
-    /// Dumps historical trie preimages from a specific block
-    DumpHistoricalPreimages(dump_historical_preimages::Command<C>),
     /// Lists current and local database versions
     Version,
     /// Returns the full database path
@@ -142,11 +139,6 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                 command.execute(provider_factory)?;
             }
             Subcommands::DumpPreimages(command) => {
-                db_ro_exec!(self.env, tool, N, {
-                    command.execute(&tool).await?;
-                });
-            }
-            Subcommands::DumpHistoricalPreimages(command) => {
                 db_ro_exec!(self.env, tool, N, {
                     command.execute(&tool).await?;
                 });
