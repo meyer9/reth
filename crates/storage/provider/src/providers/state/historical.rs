@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn history_provider_get_storage() {
         let factory = create_test_provider_factory();
-        let tx = factory.provider_rw().unwrap().into_tx();
+        let tx: reth_db::mdbx::tx::Tx<reth_db::mdbx::RW> = factory.provider_rw().unwrap().into_tx();
 
         tx.put::<tables::StoragesHistory>(
             StorageShardedKey {

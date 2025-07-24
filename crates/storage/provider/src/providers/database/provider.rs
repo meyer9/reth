@@ -4,7 +4,7 @@ use crate::{
         database::{chain::ChainStorage, metrics},
         static_file::StaticFileWriter,
         NodeTypesForProvider, StaticFileProvider,
-        ExternalHistoricalCache,
+        ExternalHistoricalCache, ExternalHistoricalCacheRef
     },
     to_range,
     traits::{
@@ -208,8 +208,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         // Wrap with external cache if available
         if let Some(cache) = &self.trie_cache {
             // TODO(Julian): fixme
-            // let cached_provider = ExternalHistoricalCache::new(state_provider, cache.clone());
-            Ok(Box::new(state_provider))
+            let cached_provider = ExternalHistoricalCacheRef::new(state_provider, cache.clone());
+            Ok(Box::new(cached_provider))
         } else {
             Ok(Box::new(state_provider))
         }
@@ -433,7 +433,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
 
         // Wrap with external cache if available
         if let Some(cache) = trie_cache {
-            Ok(Box::new(ExternalHistoricalCache::new(state_provider, cache.clone())))
+            let historical_cache_ref = ExternalHistoricalCache::new(state_provider, cache.clone());
+            Ok(Box::new(historical_cache_ref))
         } else {
             Ok(Box::new(state_provider))
         }
