@@ -1,5 +1,5 @@
 use crate::{
-    providers::{state::latest::LatestStateProvider, StaticFileProvider},
+    providers::{state::latest::LatestStateProvider, StaticFileProvider, ExternalHistoricalCache},
     to_range,
     traits::{BlockSource, ReceiptProvider},
     BlockHashReader, BlockNumReader, BlockReader, ChainSpecProvider, DatabaseProviderFactory,
@@ -27,7 +27,7 @@ use reth_storage_api::{
     TryIntoHistoricalStateProvider,
 };
 use reth_storage_errors::provider::ProviderResult;
-use reth_trie::HashedPostState;
+use reth_trie::{trie_cursor::ExternalTrieStore, HashedPostState};
 use reth_trie_db::StateCommitment;
 use revm_database::BundleState;
 use std::{
@@ -40,6 +40,9 @@ use tracing::trace;
 
 mod provider;
 pub use provider::{DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW};
+
+mod cached;
+pub use cached::CachedDatabaseProvider;
 
 use super::ProviderNodeTypes;
 
@@ -65,6 +68,8 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     prune_modes: PruneModes,
     /// The node storage handler.
     storage: Arc<N::Storage>,
+    /// Optional external trie cache
+    trie_cache: Option<Arc<dyn ExternalTrieStore>>,
 }
 
 impl<N: NodeTypes> ProviderFactory<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>> {
@@ -87,6 +92,7 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
+            trie_cache: None,
         }
     }
 
@@ -99,6 +105,12 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     /// Sets the pruning configuration for an existing [`ProviderFactory`].
     pub fn with_prune_modes(mut self, prune_modes: PruneModes) -> Self {
         self.prune_modes = prune_modes;
+        self
+    }
+
+    /// Sets the external trie cache for an existing [`ProviderFactory`].
+    pub fn with_trie_cache(mut self, cache: Arc<dyn ExternalTrieStore>) -> Self {
+        self.trie_cache = Some(cache);
         self
     }
 
@@ -129,6 +141,7 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
+            trie_cache: None,
         })
     }
 }
@@ -142,13 +155,24 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
     /// data.
     #[track_caller]
     pub fn provider(&self) -> ProviderResult<DatabaseProviderRO<N::DB, N>> {
-        Ok(DatabaseProvider::new(
-            self.db.tx()?,
-            self.chain_spec.clone(),
-            self.static_file_provider.clone(),
-            self.prune_modes.clone(),
-            self.storage.clone(),
-        ))
+        if let Some(cache) = &self.trie_cache {
+            Ok(DatabaseProvider::new_with_cache(
+                self.db.tx()?,
+                self.chain_spec.clone(),
+                self.static_file_provider.clone(),
+                self.prune_modes.clone(),
+                self.storage.clone(),
+                Some(cache.clone()),
+            ))
+        } else {
+            Ok(DatabaseProvider::new(
+                self.db.tx()?,
+                self.chain_spec.clone(),
+                self.static_file_provider.clone(),
+                self.prune_modes.clone(),
+                self.storage.clone(),
+            ))
+        }
     }
 
     /// Returns a provider with a created `DbTxMut` inside, which allows fetching and updating
@@ -157,13 +181,24 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
     /// open.
     #[track_caller]
     pub fn provider_rw(&self) -> ProviderResult<DatabaseProviderRW<N::DB, N>> {
-        Ok(DatabaseProviderRW(DatabaseProvider::new_rw(
-            self.db.tx_mut()?,
-            self.chain_spec.clone(),
-            self.static_file_provider.clone(),
-            self.prune_modes.clone(),
-            self.storage.clone(),
-        )))
+        if let Some(cache) = &self.trie_cache {
+            Ok(DatabaseProviderRW(DatabaseProvider::new_rw_with_cache(
+                self.db.tx_mut()?,
+                self.chain_spec.clone(),
+                self.static_file_provider.clone(),
+                self.prune_modes.clone(),
+                self.storage.clone(),
+                Some(cache.clone()),
+            )))
+        } else {
+            Ok(DatabaseProviderRW(DatabaseProvider::new_rw(
+                self.db.tx_mut()?,
+                self.chain_spec.clone(),
+                self.static_file_provider.clone(),
+                self.prune_modes.clone(),
+                self.storage.clone(),
+            )))
+        }
     }
 
     /// State provider for latest block
@@ -613,13 +648,14 @@ where
     N: NodeTypesWithDB<DB: fmt::Debug, ChainSpec: fmt::Debug, Storage: fmt::Debug>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { db, chain_spec, static_file_provider, prune_modes, storage } = self;
+        let Self { db, chain_spec, static_file_provider, prune_modes, storage, trie_cache } = self;
         f.debug_struct("ProviderFactory")
             .field("db", &db)
             .field("chain_spec", &chain_spec)
             .field("static_file_provider", &static_file_provider)
             .field("prune_modes", &prune_modes)
             .field("storage", &storage)
+            .field("trie_cache", &trie_cache)
             .finish()
     }
 }
@@ -632,6 +668,7 @@ impl<N: NodeTypesWithDB> Clone for ProviderFactory<N> {
             static_file_provider: self.static_file_provider.clone(),
             prune_modes: self.prune_modes.clone(),
             storage: self.storage.clone(),
+            trie_cache: self.trie_cache.clone(),
         }
     }
 }

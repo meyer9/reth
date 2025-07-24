@@ -9,10 +9,8 @@ use alloy_rlp::Encodable;
 use async_trait::async_trait;
 use aws_config::Region;
 use aws_sdk_dynamodb::{
-    types::{AttributeValue, DeleteRequest, PutRequest, Select, WriteRequest},
-    Client,
+    error::DisplayErrorContext, types::{AttributeDefinition, AttributeValue, DeleteRequest, KeySchemaElement, ProvisionedThroughput, PutRequest, Select, WriteRequest}, Client
 };
-use reth_db_api::table::Encode;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
@@ -71,11 +69,49 @@ impl DynamoDbPreimageStorage {
             }
             Err(e) => {
                 error!("Failed to describe table '{}': {}", self.table_name, e);
-                Err(PreimageStorageError::Database(eyre::eyre!(
-                    "Table '{}' does not exist or is not accessible: {}",
-                    self.table_name,
-                    e
-                )))
+                // If the table does not exist, we can create it (hash, path, data) with hash as primary key and path as sort key
+                self.client.create_table()
+                    .table_name(&self.table_name)
+                    .key_schema(KeySchemaElement::builder()
+                        .attribute_name("hash")
+                        .key_type(aws_sdk_dynamodb::types::KeyType::Hash)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create key schema: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                    .attribute_definitions(AttributeDefinition::builder()
+                        .attribute_name("hash")
+                        .attribute_type(aws_sdk_dynamodb::types::ScalarAttributeType::B)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create attribute definition: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                        .provisioned_throughput(ProvisionedThroughput::builder()
+                            .read_capacity_units(5)
+                            .write_capacity_units(5)
+                            .build()
+                            .map_err(|e| {
+                                PreimageStorageError::Storage(format!(
+                                    "Failed to create provisioned throughput: {}",
+                                    DisplayErrorContext(e)
+                                ))
+                            })?)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        PreimageStorageError::Storage(format!(
+                            "Failed to create table '{}': {}",
+                            self.table_name, DisplayErrorContext(e)
+                        ))
+                    })?;
+                info!("Created DynamoDB table '{}'", self.table_name);
+                Ok(())
             }
         }
     }
@@ -85,7 +121,7 @@ impl DynamoDbPreimageStorage {
         let mut item = HashMap::new();
 
         // Use hex-encoded hash as primary key
-        item.insert("hash".to_string(), AttributeValue::S(format!("{:x}", entry.hash)));
+        item.insert("hash".to_string(), AttributeValue::B(entry.hash.to_vec().into()));
 
         let mut buf = Vec::new();
         entry.path.encode(&mut buf);
@@ -115,7 +151,7 @@ impl DynamoDbPreimageStorage {
         &self,
         entries: Vec<PreimageEntry>,
     ) -> PreimageStorageResult<()> {
-        let mut chunks = entries.chunks(self.batch_size);
+        let chunks = entries.chunks(self.batch_size);
 
         for chunk in chunks {
             let write_requests: Vec<WriteRequest> = chunk

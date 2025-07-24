@@ -27,7 +27,7 @@ pub use local::LocalPreimageStorage;
 pub struct PreimageEntry {
     /// The hash of the data
     pub hash: alloy_primitives::B256,
-    // The path of the node in the trie (should help with pruning old preimages)
+    /// The path of the node in the trie (should help with pruning old preimages)
     pub path: Nibbles,
     /// The original data that produces the hash
     pub data: Vec<u8>,

@@ -4,6 +4,7 @@ use crate::{
         database::{chain::ChainStorage, metrics},
         static_file::StaticFileWriter,
         NodeTypesForProvider, StaticFileProvider,
+        ExternalHistoricalCache,
     },
     to_range,
     traits::{
@@ -62,6 +63,7 @@ use reth_storage_errors::provider::{ProviderResult, RootMismatch};
 use reth_trie::{
     prefix_set::{PrefixSet, PrefixSetMut, TriePrefixSets},
     updates::{StorageTrieUpdates, TrieUpdates},
+    trie_cursor::{ExternalTrieStore},
     HashedPostStateSorted, Nibbles, StateRoot, StoredNibbles,
 };
 use reth_trie_db::{DatabaseStateRoot, DatabaseStorageTrieCursor};
@@ -145,6 +147,8 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     prune_modes: PruneModes,
     /// Node storage handler.
     storage: Arc<N::Storage>,
+    /// Optional external trie cache
+    trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
 }
 
 impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
@@ -201,7 +205,14 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             );
         }
 
-        Ok(Box::new(state_provider))
+        // Wrap with external cache if available
+        if let Some(cache) = &self.trie_cache {
+            // TODO(Julian): fixme
+            // let cached_provider = ExternalHistoricalCache::new(state_provider, cache.clone());
+            Ok(Box::new(state_provider))
+        } else {
+            Ok(Box::new(state_provider))
+        }
     }
 
     #[cfg(feature = "test-utils")]
@@ -241,7 +252,19 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache: None }
+    }
+
+    /// Creates a provider with an inner read-write transaction and optional trie cache.
+    pub const fn new_rw_with_cache(
+        tx: TX,
+        chain_spec: Arc<N::ChainSpec>,
+        static_file_provider: StaticFileProvider<N::Primitives>,
+        prune_modes: PruneModes,
+        storage: Arc<N::Storage>,
+        trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
+    ) -> Self {
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
     }
 }
 
@@ -387,6 +410,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
+        let trie_cache: Option<Arc<dyn ExternalTrieStore>> = self.trie_cache.clone();
+
         let mut state_provider = HistoricalStateProvider::new(self, block_number);
 
         // If we pruned account or storage history, we can't return state on every historical block.
@@ -406,7 +431,12 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             );
         }
 
-        Ok(Box::new(state_provider))
+        // Wrap with external cache if available
+        if let Some(cache) = trie_cache {
+            Ok(Box::new(ExternalHistoricalCache::new(state_provider, cache.clone())))
+        } else {
+            Ok(Box::new(state_provider))
+        }
     }
 }
 
@@ -524,7 +554,19 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache: None }
+    }
+
+    /// Creates a provider with an inner read-only transaction and optional trie cache.
+    pub const fn new_with_cache(
+        tx: TX,
+        chain_spec: Arc<N::ChainSpec>,
+        static_file_provider: StaticFileProvider<N::Primitives>,
+        prune_modes: PruneModes,
+        storage: Arc<N::Storage>,
+        trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
+    ) -> Self {
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
     }
 
     /// Consume `DbTx` or `DbTxMut`.

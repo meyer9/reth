@@ -19,9 +19,9 @@ pub use traits::*;
 /// Provider trait implementations.
 pub mod providers;
 pub use providers::{
-    DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW, HistoricalStateProvider,
-    HistoricalStateProviderRef, LatestStateProvider, LatestStateProviderRef, ProviderFactory,
-    StaticFileAccess, StaticFileWriter,
+    CachedDatabaseProvider, DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW,
+    HistoricalStateProvider, HistoricalStateProviderRef, LatestStateProvider,
+    LatestStateProviderRef, ProviderFactory, StaticFileAccess, StaticFileWriter,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

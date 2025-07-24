@@ -6,7 +6,7 @@ use reth_db_common::DbTool;
 use reth_preimage_storage::PreimageStorage;
 use reth_provider::{providers::ProviderNodeTypes, DatabaseProviderFactory};
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::{info};
 
 use crate::common::EnvironmentArgs;
 

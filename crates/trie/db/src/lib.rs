@@ -10,6 +10,7 @@ mod state;
 mod storage;
 mod trie_cursor;
 mod witness;
+mod cached_proof;
 
 pub use commitment::{MerklePatriciaTrie, StateCommitment};
 pub use hashed_cursor::{
@@ -17,6 +18,7 @@ pub use hashed_cursor::{
 };
 pub use prefix_set::PrefixSetLoader;
 pub use proof::{DatabaseProof, DatabaseStorageProof};
+pub use cached_proof::{CachedDatabaseProof, CachedDatabaseStorageProof};
 pub use state::{DatabaseHashedPostState, DatabaseStateRoot};
 pub use storage::{DatabaseHashedStorage, DatabaseStorageRoot};
 pub use trie_cursor::{

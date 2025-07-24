@@ -60,6 +60,7 @@ impl ExtractionProgress {
 }
 
 /// Trie preimage extractor for reading from reth database
+#[derive(Debug)]
 pub struct TriePreimageExtractor;
 
 impl TriePreimageExtractor {
@@ -886,7 +887,7 @@ mod tests {
             ..Default::default()
         };
 
-        let storage = LocalPreimageStorage::new(config).await.unwrap();
+        let _ = LocalPreimageStorage::new(config).await.unwrap();
 
         // Note: This test would need a real database transaction to work
         // The streaming architecture is designed to work with any PreimageStorage implementation

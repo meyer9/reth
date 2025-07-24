@@ -1,6 +1,6 @@
 //! Trait definitions for preimage storage
 
-use crate::{PreimageEntry, PreimageStorageError, PreimageStorageResult};
+use crate::{PreimageEntry, PreimageStorageResult};
 use alloy_primitives::B256;
 use async_trait::async_trait;
 

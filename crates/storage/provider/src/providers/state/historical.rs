@@ -240,7 +240,8 @@ impl<'b, Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
 }
 
 impl<Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'_, Provider> {
-    fn tx(&self) -> &Provider::Tx {
+    /// Returns a reference to the underlying database transaction.
+    pub fn tx(&self) -> &Provider::Tx {
         self.provider.tx_ref()
     }
 }
@@ -491,7 +492,7 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
 
     /// Returns a new provider that takes the `TX` as reference
     #[inline(always)]
-    const fn as_ref(&self) -> HistoricalStateProviderRef<'_, Provider> {
+    pub const fn as_ref(&self) -> HistoricalStateProviderRef<'_, Provider> {
         HistoricalStateProviderRef::new_with_lowest_available_blocks(
             &self.provider,
             self.block_number,

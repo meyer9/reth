@@ -7,7 +7,6 @@ use crate::{
 use alloy_primitives::B256;
 use async_trait::async_trait;
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
 };
 use tokio::{
@@ -17,6 +16,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 /// Local file system implementation of PreimageStorage
+/// #[derive(Debug)]
 pub struct LocalPreimageStorage {
     base_path: PathBuf,
     batch_size: usize,

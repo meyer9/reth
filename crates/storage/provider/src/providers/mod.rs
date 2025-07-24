@@ -17,6 +17,7 @@ mod state;
 pub use state::{
     historical::{HistoricalStateProvider, HistoricalStateProviderRef, LowestAvailableBlocks},
     latest::{LatestStateProvider, LatestStateProviderRef},
+    external_cache::{CachedTrieCursor, CachedTrieCursorFactory, ExternalHistoricalCache}
 };
 
 mod consistent_view;

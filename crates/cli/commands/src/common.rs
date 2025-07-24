@@ -20,7 +20,7 @@ use reth_node_core::{
 };
 use reth_provider::{
     providers::{BlockchainProvider, NodeTypesForProvider, StaticFileProvider},
-    ProviderFactory, StaticFileProviderFactory,
+    ProviderFactory,
 };
 use std::{path::PathBuf, sync::Arc};
 use tracing::{debug, info, warn};
