@@ -1,29 +1,55 @@
 use crate::{hashed_cursor::HashedCursorFactory, BranchNodeCompact, Nibbles};
 use alloy_primitives::B256;
 use reth_storage_errors::{db::DatabaseError, provider::ProviderError};
-use std::{fmt::Debug, sync::Arc};
+use tracing::info;
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use super::{TrieCursor, TrieCursorFactory};
+
+/// Example in-memory external cache for trie nodes.
+
+#[derive(Debug, Clone)]
+pub struct InMemoryExternalTrieStore {
+}
+
+impl InMemoryExternalTrieStore {
+    pub fn new() -> Self {
+        Self {
+        }
+    }
+}
+
+impl ExternalTrieStore for InMemoryExternalTrieStore {
+    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+        info!("Fetching trie node from cache for key: {:?}", key);
+        Ok(None)
+    }
+    fn get_trie_nodes(
+        &self,
+        keys: &[Nibbles],
+    ) -> Result<Vec<Option<BranchNodeCompact>>, ProviderError> {
+        Ok(
+            keys.iter()
+                .map(|key| {
+                    info!("Fetching trie node from cache for key: {:?}", key);
+                    None
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+}
 
 /// Trait for external key-value storage of trie nodes.
 pub trait ExternalTrieStore: Send + Sync + Debug {
     /// Get a trie node by its key.
     fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError>;
 
-    /// Put a trie node at the given key.
-    fn put_trie_node(&self, key: Nibbles, node: BranchNodeCompact) -> Result<(), ProviderError>;
-
     /// Get multiple trie nodes by their keys.
     fn get_trie_nodes(
         &self,
         keys: &[Nibbles],
     ) -> Result<Vec<Option<BranchNodeCompact>>, ProviderError>;
-
-    /// Put multiple trie nodes.
-    fn put_trie_nodes(
-        &self,
-        nodes: Vec<(Nibbles, BranchNodeCompact)>,
-    ) -> Result<(), ProviderError>;
 }
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
@@ -55,11 +81,6 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         // Fall back to inner cursor
         let result = self.inner.seek_exact(key)?;
 
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
-
         Ok(result)
     }
 
@@ -70,21 +91,11 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         // For seek operations, we can't easily check cache first since we need >= behavior
         let result = self.inner.seek(key)?;
 
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
-
         Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         let result = self.inner.next()?;
-
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
 
         Ok(result)
     }

@@ -74,7 +74,7 @@ use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, StaticFileProvider},
     BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, ProviderError,
     ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
-    StaticFileProviderFactory,
+    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -469,11 +469,16 @@ where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
+        let historical_cache = Arc::new(
+            InMemoryExternalTrieStore::new()
+        );
+
         let factory = ProviderFactory::new(
             self.right().clone(),
             self.chain_spec(),
             StaticFileProvider::read_write(self.data_dir().static_files())?,
         )
+        .with_trie_cache(historical_cache)
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 

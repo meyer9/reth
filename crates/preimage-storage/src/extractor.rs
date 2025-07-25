@@ -413,7 +413,7 @@ impl TriePreimageExtractor {
         while let Some((stored_nibbles, branch_node)) = current {
             let preimage_entry =
                 Self::create_preimage_from_account_node(&stored_nibbles, &branch_node)?;
-            trace!("Extracted account trie preimage: {:x}", preimage_entry.hash);
+            info!("Extracted account trie preimage: {:?} {:x}", stored_nibbles.0, preimage_entry.hash);
 
             batch.push(preimage_entry.clone());
             total_size_bytes += preimage_entry.data.len();
@@ -446,6 +446,10 @@ impl TriePreimageExtractor {
                 ))
             })?;
         }
+
+        // Create the root node preimage by finding all 1-length nibbles and adding them to a branch node,
+        // or if there are no 1-length nibbles, find the shortest nibble and add it to an extension node. If
+        // empty, don't add anything.
 
         // Store remaining batch
         if !batch.is_empty() {

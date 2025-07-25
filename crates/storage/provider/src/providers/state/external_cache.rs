@@ -51,11 +51,6 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         // Fall back to inner cursor
         let result = self.inner.seek_exact(key)?;
 
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
-
         Ok(result)
     }
 
@@ -66,21 +61,12 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         // For seek operations, we can't easily check cache first since we need >= behavior
         let result = self.inner.seek(key)?;
 
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
 
         Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
         let result = self.inner.next()?;
-
-        // Cache the result if found
-        if let Some((found_key, ref node)) = result {
-            let _ = self.cache.put_trie_node(found_key, node.clone());
-        }
 
         Ok(result)
     }

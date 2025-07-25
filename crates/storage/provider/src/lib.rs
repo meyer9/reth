@@ -48,6 +48,10 @@ pub use reth_chain_state::{
     CanonStateNotifications, CanonStateSubscriptions,
 };
 
+pub use reth_trie::trie_cursor::{
+    ExternalTrieStore, InMemoryExternalTrieStore
+};
+
 // reexport traits to avoid breaking changes
 pub use reth_storage_api::{HistoryWriter, StatsReader};
 
