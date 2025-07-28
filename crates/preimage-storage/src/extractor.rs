@@ -1,14 +1,18 @@
 //! Trie preimage extractor for reading from reth database
 
 use crate::{PreimageEntry, PreimageStorage, PreimageStorageError, PreimageStorageResult};
-use alloy_primitives::{keccak256, B256};
+use alloy_primitives::{keccak256, FixedBytes, B256};
 use alloy_rlp::Encodable;
+use bytes::BufMut;
+use hex::ToHex;
 use reth_db_api::{
     cursor::DbCursorRO,
     tables::{AccountsTrie, StoragesTrie},
-    transaction::DbTx,
+    transaction::DbTx, HashedAccounts,
 };
-use reth_trie::{BranchNodeCompact, StorageTrieEntry, StoredNibbles};
+use reth_primitives_traits::account;
+use reth_trie::{hash_builder::HashBuilder, metrics::TrieRootMetrics, node_iter::{TrieElement, TrieNodeIter}, trie_cursor::TrieCursorFactory, updates::TrieUpdates, walker::{Changes, TrieWalker}, BranchNode, BranchNodeCompact, ExtensionNode, Nibbles, RlpNode, StorageRoot, StorageTrieEntry, StoredNibbles, TrieType, hashed_cursor::{HashedCursorFactory}};
+use reth_trie_db::{DatabaseAccountTrieCursor, DatabaseTrieCursorFactory, DatabaseHashedAccountCursor, DatabaseHashedCursorFactory};
 use std::{collections::HashMap, time::Instant};
 use tracing::{debug, info, trace};
 
@@ -56,6 +60,13 @@ impl ExtractionProgress {
             self.estimated_total_nodes,
             self.current_depth
         )
+    }
+}
+
+pub struct AllAccountPrefixSet {}
+impl Changes for AllAccountPrefixSet {
+    fn contains(&mut self, key: &Nibbles) -> bool {
+        true
     }
 }
 
@@ -379,97 +390,86 @@ impl TriePreimageExtractor {
         tx: &TX,
         storage: &dyn PreimageStorage,
     ) -> PreimageStorageResult<TriePreimageStatistics> {
-        let mut cursor = tx.cursor_read::<AccountsTrie>().map_err(|e| {
+        let trie_cursor_factory = DatabaseTrieCursorFactory::new(tx);
+        let hashed_cursor_factory = DatabaseHashedCursorFactory::new(tx);
+
+        let trie_cursor = trie_cursor_factory.account_trie_cursor().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!(
                 "Failed to open accounts trie cursor: {}",
                 e
             ))
         })?;
-
-        debug!("Estimating account trie size...");
-        let start_est = Instant::now();
-        // First pass: estimate total nodes by analyzing trie structure
-        let estimated_total = Self::estimate_account_trie_size(tx)?;
-        debug!("Estimation complete in {:.2?}", start_est.elapsed());
-        let mut progress = ExtractionProgress::new(estimated_total);
-
-        info!("Estimated {} total account trie nodes", estimated_total);
-
-        // Second pass: extract preimages with streaming to storage
-        debug!("Beginning streaming account trie extraction");
-        let start_extract = Instant::now();
-        let mut current = cursor.first().map_err(|e| {
+        let hashed_cursor = hashed_cursor_factory.hashed_account_cursor().map_err(|e| {
             PreimageStorageError::Database(eyre::eyre!(
-                "Failed to read first account trie entry: {}",
+                "Failed to open hashed accounts cursor: {}",
                 e
             ))
         })?;
 
-        let mut batch = Vec::new();
-        const BATCH_SIZE: usize = 100; // Process in batches for efficiency
-        let mut total_size_bytes = 0;
-        let mut processed_count = 0;
+        let walker = TrieWalker::state_trie(trie_cursor, AllAccountPrefixSet{});
 
-        while let Some((stored_nibbles, branch_node)) = current {
-            let preimage_entry =
-                Self::create_preimage_from_account_node(&stored_nibbles, &branch_node)?;
-            info!("Extracted account trie preimage: {:?} {:x}", stored_nibbles.0, preimage_entry.hash);
+        let mut node_iter = TrieNodeIter::state_trie(
+            walker,
+            hashed_cursor,
+        );
 
-            batch.push(preimage_entry.clone());
-            total_size_bytes += preimage_entry.data.len();
-            processed_count += 1;
+        let mut hash_builder = HashBuilder::default().with_updates(true);
+        let mut account_rlp = Vec::new();
+        let mut trie_updates = TrieUpdates::default();
 
-            // Update progress based on node depth
-            let depth = stored_nibbles.0.len();
-            progress.update(depth);
+        while let Some(node) = node_iter.try_next().unwrap() {
+            match node {
+                TrieElement::Branch(branch) => {
+                    hash_builder.add_branch(branch.key, branch.value, branch.children_are_in_trie);
+                }
+                TrieElement::Leaf(hashed_address, account) => {
 
-            // Store batch when it reaches the target size
-            if batch.len() >= BATCH_SIZE {
-                storage.store_preimages(batch.clone()).await?;
-                batch.clear();
-
-                // Log progress every 1000 nodes or when progress changes significantly
-                if processed_count % 100000 == 0 || processed_count == BATCH_SIZE {
-                    debug!(
-                        "{} ({} nodes, elapsed: {:.2?})",
-                        progress.to_string(),
-                        processed_count,
-                        start_extract.elapsed()
+                    let metrics = TrieRootMetrics::new(TrieType::Storage);
+                    // We assume we can always calculate a storage root without
+                    // OOMing. This opens us up to a potential DOS vector if
+                    // a contract had too many storage entries and they were
+                    // all buffered w/o us returning and committing our intermediate
+                    // progress.
+                    // TODO: We can consider introducing the TrieProgress::Progress/Complete
+                    // abstraction inside StorageRoot, but let's give it a try as-is for now.
+                    let storage_root_calculator = StorageRoot::new_hashed(
+                        trie_cursor_factory.clone(),
+                        hashed_cursor_factory.clone(),
+                        hashed_address,
+                        Default::default(),
+                        metrics,
                     );
+
+
+                    let storage_root = {
+                        let (root, _storage_slots_walked, updates) =
+                            storage_root_calculator.root_with_updates().map_err(|e| {
+                                PreimageStorageError::Database(eyre::eyre!(
+                                    "Failed to calculate storage root: {}",
+                                    e
+                                ))
+                            })?;
+                        trie_updates.insert_storage_updates(hashed_address, updates);
+                        root
+                    };
+                    
+                    account_rlp.clear();
+                    let account = account.into_trie_account(storage_root);
+                    account.encode(&mut account_rlp as &mut dyn BufMut);
+                    hash_builder.add_leaf(Nibbles::unpack(hashed_address), &account_rlp);
                 }
             }
-
-            current = cursor.next().map_err(|e| {
-                PreimageStorageError::Database(eyre::eyre!(
-                    "Failed to read next account trie entry: {}",
-                    e
-                ))
-            })?;
         }
 
-        // Create the root node preimage by finding all 1-length nibbles and adding them to a branch node,
-        // or if there are no 1-length nibbles, find the shortest nibble and add it to an extension node. If
-        // empty, don't add anything.
+        let root = hash_builder.root();
+        info!("Root: {:x}", root);
 
-        // Store remaining batch
-        if !batch.is_empty() {
-            storage.store_preimages(batch).await?;
+        for (nibble, branch) in hash_builder.updated_branch_nodes.unwrap() {
+            info!("Account node: {:?} {:?}", nibble, branch);
         }
 
-        info!(
-            "Completed streaming account trie extraction: {} (elapsed: {:.2?})",
-            progress.to_string(),
-            start_extract.elapsed()
-        );
-        debug!("Streamed {} account trie preimages", processed_count);
+        Err(PreimageStorageError::Storage("not implemented".to_string()))
 
-        Ok(TriePreimageStatistics {
-            account_preimage_count: processed_count,
-            storage_preimage_count: 0,
-            total_account_size_bytes: total_size_bytes,
-            total_storage_size_bytes: 0,
-            progress: Some(progress),
-        })
     }
 
     /// Extract preimages from the account trie with streaming and progress callback
@@ -733,17 +733,20 @@ impl TriePreimageExtractor {
         stored_nibbles: &StoredNibbles,
         branch_node: &BranchNodeCompact,
     ) -> PreimageStorageResult<Vec<u8>> {
-        let mut buf = Vec::new();
+        info!("Encoding account trie node: {:?}", branch_node);
 
-        // Encode the nibbles path
-        stored_nibbles.0.encode(&mut buf);
+        // assert!(branch_node.state_mask.count_ones() == (branch_node.hashes.len() as u32), "state mask: {:?} hashes: {:?}", branch_node.state_mask, branch_node.hashes);
+        // assert!(branch_node.state_mask == branch_node.tree_mask, "state mask: {:?} tree mask: {:?}", branch_node.state_mask, branch_node.tree_mask);
 
-        // Encode the branch node using serde
-        let encoded_node =
-            serde_json::to_vec(branch_node).map_err(|e| PreimageStorageError::Serialization(e))?;
-        buf.extend(encoded_node);
+        let branch_node = BranchNode {
+            state_mask: branch_node.state_mask,
+            stack: branch_node.hashes.iter().map(|h| RlpNode::from_raw(h.as_slice()).unwrap()).collect(),
+        };
 
-        Ok(buf)
+
+        let encoded_node = alloy_rlp::encode(branch_node);
+
+        Ok(encoded_node)
     }
 
     /// Encode storage trie node for hashing

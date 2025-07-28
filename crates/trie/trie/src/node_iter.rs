@@ -1,5 +1,5 @@
 use crate::{
-    hashed_cursor::HashedCursor, trie_cursor::TrieCursor, walker::TrieWalker, Nibbles, TrieType,
+    hashed_cursor::HashedCursor, trie_cursor::TrieCursor, walker::{Changes, TrieWalker}, Nibbles, TrieType,
 };
 use alloy_primitives::B256;
 use reth_storage_errors::db::DatabaseError;
@@ -45,9 +45,9 @@ struct SeekedHashedEntry<V> {
 
 /// An iterator over existing intermediate branch nodes and updated leaf nodes.
 #[derive(Debug)]
-pub struct TrieNodeIter<C, H: HashedCursor> {
+pub struct TrieNodeIter<C, P, H: HashedCursor> {
     /// The walker over intermediate nodes.
-    pub walker: TrieWalker<C>,
+    pub walker: TrieWalker<C, P>,
     /// The cursor for the hashed entries.
     pub hashed_cursor: H,
     /// The type of the trie.
@@ -74,22 +74,22 @@ pub struct TrieNodeIter<C, H: HashedCursor> {
     last_next_result: Option<(B256, H::Value)>,
 }
 
-impl<C, H: HashedCursor> TrieNodeIter<C, H>
+impl<C, P, H: HashedCursor> TrieNodeIter<C, P, H>
 where
     H::Value: Copy,
 {
     /// Creates a new [`TrieNodeIter`] for the state trie.
-    pub fn state_trie(walker: TrieWalker<C>, hashed_cursor: H) -> Self {
+    pub fn state_trie(walker: TrieWalker<C, P>, hashed_cursor: H) -> Self {
         Self::new(walker, hashed_cursor, TrieType::State)
     }
 
     /// Creates a new [`TrieNodeIter`] for the storage trie.
-    pub fn storage_trie(walker: TrieWalker<C>, hashed_cursor: H) -> Self {
+    pub fn storage_trie(walker: TrieWalker<C, P>, hashed_cursor: H) -> Self {
         Self::new(walker, hashed_cursor, TrieType::Storage)
     }
 
     /// Creates a new [`TrieNodeIter`].
-    fn new(walker: TrieWalker<C>, hashed_cursor: H, trie_type: TrieType) -> Self {
+    fn new(walker: TrieWalker<C, P>, hashed_cursor: H, trie_type: TrieType) -> Self {
         Self {
             walker,
             hashed_cursor,
@@ -167,9 +167,10 @@ where
     }
 }
 
-impl<C, H> TrieNodeIter<C, H>
+impl<C, P, H> TrieNodeIter<C, P, H>
 where
     C: TrieCursor,
+    P: Changes,
     H: HashedCursor,
     H::Value: Copy,
 {

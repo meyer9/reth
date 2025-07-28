@@ -60,7 +60,7 @@ fn test_cursor<T>(mut trie: T, expected: &[Vec<u8>])
 where
     T: TrieCursor,
 {
-    let mut walker = TrieWalker::state_trie(&mut trie, Default::default());
+    let mut walker = TrieWalker::state_trie(&mut trie, PrefixSet::default());
     assert!(walker.key().unwrap().is_empty());
 
     // We're traversing the path in lexicographical order.

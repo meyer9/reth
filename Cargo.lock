@@ -10134,6 +10134,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-trie",
+ "reth-trie-db",
  "serde",
  "serde_json",
  "tempfile",

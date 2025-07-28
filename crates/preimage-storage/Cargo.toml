@@ -31,6 +31,7 @@ aws-sdk-dynamodb = "1.0"
 
 # Reth dependencies
 reth-db-api.workspace = true
+reth-trie-db.workspace = true
 reth-trie.workspace = true
 reth-provider.workspace = true
 reth-primitives-traits.workspace = true
