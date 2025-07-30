@@ -6,15 +6,49 @@ use alloy_rlp::Encodable;
 use bytes::BufMut;
 use hex::ToHex;
 use reth_db_api::{
-    cursor::DbCursorRO,
-    tables::{AccountsTrie, StoragesTrie},
-    transaction::DbTx, HashedAccounts,
+    cursor::DbCursorRO, tables::{AccountsTrie, StoragesTrie}, transaction::DbTx, DatabaseError, HashedAccounts
 };
 use reth_primitives_traits::account;
-use reth_trie::{hash_builder::HashBuilder, metrics::TrieRootMetrics, node_iter::{TrieElement, TrieNodeIter}, trie_cursor::TrieCursorFactory, updates::TrieUpdates, walker::{Changes, TrieWalker}, BranchNode, BranchNodeCompact, ExtensionNode, Nibbles, RlpNode, StorageRoot, StorageTrieEntry, StoredNibbles, TrieType, hashed_cursor::{HashedCursorFactory}};
+use reth_trie::{hash_builder::HashBuilder, hashed_cursor::HashedCursorFactory, metrics::TrieRootMetrics, node_iter::{TrieElement, TrieNodeIter}, trie_cursor::TrieCursorFactory, updates::TrieUpdates, walker::{Changes, TrieWalker}, BranchNode, BranchNodeCompact, ExtensionNode, Nibbles, RlpNode, StorageRoot, StorageTrieEntry, StoredNibbles, TrieType, EMPTY_ROOT_HASH};
 use reth_trie_db::{DatabaseAccountTrieCursor, DatabaseTrieCursorFactory, DatabaseHashedAccountCursor, DatabaseHashedCursorFactory};
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, ops::Sub, time::Instant};
 use tracing::{debug, info, trace};
+use std::time::Duration;
+use reth_trie::hashed_cursor::HashedStorageCursor;
+
+/// Estimate the percentage completion of a trie traversal based on the current nibbles path.
+/// 
+/// In a 16-ary trie (hex nibbles), each nibble represents a branch with 16 possible values.
+/// This function calculates how far through the trie space we are based on the current path.
+/// 
+/// # Arguments
+/// * `nibbles` - The current path in the trie as a sequence of nibbles (4-bit values)
+/// 
+/// # Returns
+/// A percentage value between 0.0 and 1.0 representing the estimated completion
+pub fn estimate_trie_progress_pct(nibbles: &Nibbles) -> f64 {
+    if nibbles.is_empty() {
+        return 0.0;
+    }
+
+    let mut total_pct = 0.0;
+    
+    // For each nibble in the path, calculate its contribution to the overall progress
+    for i in 0..nibbles.len() {
+        let nibble = nibbles.get(i).unwrap();
+        
+        // Each nibble represents nibble/16 of the space at that level
+        let nibble_contribution = nibble as f64 / 16.0;
+        
+        // Weight the contribution by the level in the trie
+        // At level 0, the nibble represents nibble/16 of the total space
+        // At level 1, it represents nibble/(16^2) of the total space, etc.
+        let level_weight = 16_f64.powi(i as i32);
+        total_pct += nibble_contribution / level_weight;
+    }
+    
+    total_pct
+}
 
 /// Progress tracking for trie extraction
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -416,15 +450,21 @@ impl TriePreimageExtractor {
         let mut hash_builder = HashBuilder::default().with_updates(true);
         let mut account_rlp = Vec::new();
         let mut trie_updates = TrieUpdates::default();
+        let mut total_updated_branch_nodes = 0;
+        let mut total_updated_storage_branch_nodes = 0;
+        let start_time = Instant::now();
 
         while let Some(node) = node_iter.try_next().unwrap() {
             match node {
                 TrieElement::Branch(branch) => {
+                    info!("Processing branch: {:?}", branch.key);
                     hash_builder.add_branch(branch.key, branch.value, branch.children_are_in_trie);
                 }
                 TrieElement::Leaf(hashed_address, account) => {
+                    // info!("Processing leaf: {:?}", hashed_address);
 
                     let metrics = TrieRootMetrics::new(TrieType::Storage);
+                    let instant = Instant::now();
                     // We assume we can always calculate a storage root without
                     // OOMing. This opens us up to a potential DOS vector if
                     // a contract had too many storage entries and they were
@@ -432,26 +472,116 @@ impl TriePreimageExtractor {
                     // progress.
                     // TODO: We can consider introducing the TrieProgress::Progress/Complete
                     // abstraction inside StorageRoot, but let's give it a try as-is for now.
-                    let storage_root_calculator = StorageRoot::new_hashed(
-                        trie_cursor_factory.clone(),
-                        hashed_cursor_factory.clone(),
-                        hashed_address,
-                        Default::default(),
-                        metrics,
-                    );
+                    // let storage_root_calculator = StorageRoot::new_hashed(
+                    //     trie_cursor_factory.clone(),
+                    //     hashed_cursor_factory.clone(),
+                    //     hashed_address,
+                    //     Default::default(),
+                    //     metrics,
+                    // );
+
+                    let elapsed = instant.elapsed();
+                    if elapsed > Duration::from_millis(100) {
+                        info!("Storage root calculation time: {:?}", elapsed);
+                    }
+
+                    let num_updated_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+
+                    if num_updated_branch_nodes >= 10000 {
+                        info!("num_updated_branch_nodes: {}", num_updated_branch_nodes);
+                        info!("total_updated_branch_nodes: {}", total_updated_branch_nodes);
+
+                        // TODO: flush here using hash_builder.take_updated_branch_nodes()
+                        let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
+                        // for (nibble, branch) in updated_branch_nodes {
+                        //     // info!("Account node: {:?} {:?}", nibble, branch);
+                        // }
+                        let last_node_processed = updated_branch_nodes.keys().last().unwrap();
+
+                        info!("last_node_processed: {:?}", last_node_processed);
+
+                        let pct_progress = estimate_trie_progress_pct(last_node_processed);
+                        let elapsed = start_time.elapsed();
+                        let estimated_total_time = if pct_progress > 0.0 { elapsed.div_f64(pct_progress) } else { Duration::from_secs(0) };
+                        let estimated_remaining_time = estimated_total_time.checked_sub(elapsed).unwrap_or(Duration::from_secs(0));
+                        info!("Estimated remaining time: {:?}", estimated_remaining_time);
+                        info!("Percent complete: {:.2}%", pct_progress * 100.0);
+
+                        total_updated_branch_nodes += num_updated_branch_nodes;
+                        hash_builder = new_hash_builder;
+                        hash_builder.set_updates(true);
+
+                    }
 
 
-                    let storage_root = {
-                        let (root, _storage_slots_walked, updates) =
-                            storage_root_calculator.root_with_updates().map_err(|e| {
-                                PreimageStorageError::Database(eyre::eyre!(
-                                    "Failed to calculate storage root: {}",
-                                    e
-                                ))
-                            })?;
-                        trie_updates.insert_storage_updates(hashed_address, updates);
-                        root
-                    };
+                    let storage_root = || -> Result<B256, DatabaseError> {
+                        let mut hashed_storage_cursor =
+                            hashed_cursor_factory.hashed_storage_cursor(hashed_address)?;
+                        let mut hash_builder = HashBuilder::default().with_updates(true);
+
+                        if hashed_storage_cursor.is_storage_empty()? {
+                            return Ok(EMPTY_ROOT_HASH)
+                        }
+
+                        let trie_cursor = trie_cursor_factory.storage_trie_cursor(hashed_address)?;
+                        let walker = TrieWalker::storage_trie(trie_cursor, AllAccountPrefixSet{});
+
+                        let mut node_iter = TrieNodeIter::storage_trie(
+                            walker,
+                            hashed_storage_cursor,
+                        );
+
+                        while let Some(node) = node_iter.try_next()? {
+                            match node {
+                                TrieElement::Branch(node) => {
+                                    hash_builder.add_branch(node.key, node.value, node.children_are_in_trie);
+                                }
+                                TrieElement::Leaf(hashed_slot, value) => {
+                                    hash_builder.add_leaf(
+                                        Nibbles::unpack(hashed_slot),
+                                        alloy_rlp::encode_fixed_size(&value).as_ref(),
+                                    );
+                                }
+                            }
+
+                            
+                            
+                            let num_updated_storage_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+                            if num_updated_storage_branch_nodes >= 10000 {
+
+                                total_updated_storage_branch_nodes += num_updated_storage_branch_nodes;
+                                info!("num_updated_storage_branch_nodes: {}", num_updated_storage_branch_nodes);
+                                info!("total_updated_storage_branch_nodes: {}", total_updated_storage_branch_nodes);
+
+                                let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
+                                hash_builder = new_hash_builder;
+                                hash_builder.set_updates(true);
+                            }
+                        }
+
+                        
+                        let num_updated_storage_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+                        total_updated_storage_branch_nodes += num_updated_storage_branch_nodes;
+
+                        if total_updated_storage_branch_nodes > 0 {
+                            info!("total_updated_storage_branch_nodes: {}", total_updated_storage_branch_nodes);
+                        }
+
+                        let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
+                        hash_builder = new_hash_builder;
+                        hash_builder.set_updates(true);
+
+
+                        let root = hash_builder.root();
+
+                        Ok(root)
+
+                    }().map_err(|e| {
+                        PreimageStorageError::Database(eyre::eyre!(
+                            "Failed to calculate storage root: {}",
+                            e
+                        ))
+                    })?;
                     
                     account_rlp.clear();
                     let account = account.into_trie_account(storage_root);
@@ -461,8 +591,12 @@ impl TriePreimageExtractor {
             }
         }
 
+        total_updated_branch_nodes += hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+
         let root = hash_builder.root();
         info!("Root: {:x}", root);
+
+        info!("total_updated_branch_nodes: {}", total_updated_branch_nodes);
 
         for (nibble, branch) in hash_builder.updated_branch_nodes.unwrap() {
             info!("Account node: {:?} {:?}", nibble, branch);
@@ -880,6 +1014,163 @@ mod tests {
     use crate::{local::LocalPreimageStorage, PreimageStorageConfig};
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_estimate_trie_progress_pct_empty_nibbles() {
+        let nibbles = Nibbles::from_nibbles_unchecked(vec![]);
+        let progress = estimate_trie_progress_pct(&nibbles);
+        assert_eq!(progress, 0.0, "Empty nibbles should return 0.0");
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_single_nibble() {
+        // Test all possible single nibble values (0-15)
+        for nibble_val in 0..16 {
+            let nibbles = Nibbles::from_nibbles_unchecked(vec![nibble_val]);
+            let progress = estimate_trie_progress_pct(&nibbles);
+            
+            // For a single nibble at level 0, progress should be nibble_val/16/16
+            let expected = (nibble_val as f64 / 16.0);
+            assert!(
+                (progress - expected).abs() < 1e-10,
+                "Single nibble {}: expected {}, got {}",
+                nibble_val,
+                expected,
+                progress
+            );
+        }
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_ordering() {
+        // Progress should increase monotonically with higher nibble values
+        let nibbles_0 = Nibbles::from_nibbles_unchecked(vec![0]);
+        let nibbles_8 = Nibbles::from_nibbles_unchecked(vec![8]);
+        let nibbles_15 = Nibbles::from_nibbles_unchecked(vec![15]);
+        
+        let progress_0 = estimate_trie_progress_pct(&nibbles_0);
+        let progress_8 = estimate_trie_progress_pct(&nibbles_8);
+        let progress_15 = estimate_trie_progress_pct(&nibbles_15);
+        
+        assert!(progress_0 < progress_8, "Progress should increase with higher nibbles");
+        assert!(progress_8 < progress_15, "Progress should increase with higher nibbles");
+        assert!(progress_15 < 1.0, "Progress should be less than 1.0");
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_depth_weighting() {
+        // Deeper nibbles should have less impact on overall progress
+        let shallow = Nibbles::from_nibbles_unchecked(vec![8]);
+        let deeper = Nibbles::from_nibbles_unchecked(vec![0, 8]);
+        let deepest = Nibbles::from_nibbles_unchecked(vec![0, 0, 8]);
+        
+        let progress_shallow = estimate_trie_progress_pct(&shallow);
+        let progress_deeper = estimate_trie_progress_pct(&deeper);
+        let progress_deepest = estimate_trie_progress_pct(&deepest);
+        
+        // The contribution of the 8 nibble should decrease with depth
+        assert!(progress_shallow > progress_deeper, "Deeper nibbles should contribute less");
+        assert!(progress_deeper > progress_deepest, "Even deeper nibbles should contribute even less");
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_multi_nibble() {
+        // Test with multiple nibbles
+        let nibbles = Nibbles::from_nibbles_unchecked(vec![8, 4, 2]);
+        let progress = estimate_trie_progress_pct(&nibbles);
+        
+        // Calculate expected value manually
+        // Level 0: 8/16 / 16^1 = 0.5 / 16 = 0.03125
+        // Level 1: 4/16 / 16^2 = 0.25 / 256 = 0.0009765625
+        // Level 2: 2/16 / 16^3 = 0.125 / 4096 = 0.0000305175781...
+        let expected = (8.0) / 16.0 + (4.0) / 256.0 + (2.0) / 4096.0;
+        
+        assert!(
+            (progress - expected).abs() < 1e-10,
+            "Multi-nibble progress: expected {}, got {}",
+            expected,
+            progress
+        );
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_boundary_cases() {
+        // Test with all zeros (should be very small but not zero)
+        let all_zeros = Nibbles::from_nibbles_unchecked(vec![0, 0, 0]);
+        let progress_zeros = estimate_trie_progress_pct(&all_zeros);
+        assert!(progress_zeros == 0.0, "All zeros should give 0.0 progress");
+
+        // Test with all 15s (maximum values)
+        let all_max = Nibbles::from_nibbles_unchecked(vec![15, 15, 15]);
+        let progress_max = estimate_trie_progress_pct(&all_max);
+        assert!(progress_max < 1.0, "Even all max values should be less than 1.0");
+        assert!(progress_max > 0.0, "All max values should be greater than 0.0");
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_mathematical_consistency() {
+        // Test that the mathematical formula is consistent
+        let nibbles_a = Nibbles::from_nibbles_unchecked(vec![4]);
+        let nibbles_b = Nibbles::from_nibbles_unchecked(vec![8]);
+        
+        let progress_a = estimate_trie_progress_pct(&nibbles_a);
+        let progress_b = estimate_trie_progress_pct(&nibbles_b);
+        
+        // nibbles_b should have exactly twice the progress of nibbles_a
+        let ratio = progress_b / progress_a;
+        assert!(
+            (ratio - 2.0).abs() < 1e-10,
+            "Progress ratio should be 2.0, got {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_realistic_paths() {
+        // Test with realistic trie paths that might occur in practice
+        
+        // Simulate early in traversal
+        let early_path = Nibbles::from_nibbles_unchecked(vec![1, 2]);
+        let early_progress = estimate_trie_progress_pct(&early_path);
+        assert!(early_progress < 0.01, "Early path should have low progress");
+        
+        // Simulate middle of traversal  
+        let middle_path = Nibbles::from_nibbles_unchecked(vec![8, 0, 0]);
+        let middle_progress = estimate_trie_progress_pct(&middle_path);
+        assert!(middle_progress > early_progress, "Middle path should have higher progress");
+        assert!(middle_progress < 0.1, "Middle path should still be reasonable");
+        
+        // Simulate late in traversal
+        let late_path = Nibbles::from_nibbles_unchecked(vec![14, 15, 14]);
+        let late_progress = estimate_trie_progress_pct(&late_path);
+        assert!(late_progress > middle_progress, "Late path should have highest progress");
+    }
+
+    #[test]
+    fn test_estimate_trie_progress_pct_monotonic_within_level() {
+        // Within the same depth, progress should increase monotonically
+        let base_path = vec![5, 3];
+        
+        for i in 0..16 {
+            let mut path = base_path.clone();
+            path.push(i);
+            let nibbles = Nibbles::from_nibbles_unchecked(path);
+            let progress = estimate_trie_progress_pct(&nibbles);
+            
+            if i > 0 {
+                let mut prev_path = base_path.clone(); 
+                prev_path.push(i - 1);
+                let prev_nibbles = Nibbles::from_nibbles_unchecked(prev_path);
+                let prev_progress = estimate_trie_progress_pct(&prev_nibbles);
+                
+                assert!(
+                    progress > prev_progress,
+                    "Progress should increase: nibble {} ({}) > nibble {} ({})",
+                    i, progress, i-1, prev_progress
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_streaming_extraction() {
