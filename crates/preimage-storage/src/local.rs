@@ -87,16 +87,7 @@ impl LocalPreimageStorage {
 
     /// Write preimage to file
     async fn write_preimage_file(&self, entry: &PreimageEntry) -> PreimageStorageResult<()> {
-        self.ensure_directory(&entry.hash).await?;
-
-        let file_path = self.get_file_path(&entry.hash);
-        let mut file =
-            OpenOptions::new().create(true).write(true).truncate(true).open(&file_path).await?;
-
-        // Write hash first, then data
-        file.write_all(entry.hash.as_slice()).await?;
-        file.write_all(&entry.data).await?;
-        file.sync_all().await?;
+        // stub
 
         Ok(())
     }
@@ -168,7 +159,7 @@ impl LocalPreimageStorage {
 impl PreimageStorage for LocalPreimageStorage {
     async fn store_preimage(&self, entry: PreimageEntry) -> PreimageStorageResult<()> {
         self.write_preimage_file(&entry).await?;
-        debug!("Stored preimage with hash: {:x}", entry.hash);
+        // debug!("Stored preimage with hash: {:x}", entry.hash);
         Ok(())
     }
 

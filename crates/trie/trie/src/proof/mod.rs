@@ -213,7 +213,9 @@ impl<T, H> StorageProof<T, H> {
         }
     }
 
-    /// Set the trie cursor factory.
+    /// Set the trie cursor factory. 0xdfa3e9ac2f28af8beb8afc1b754cb5c446a545ed9403c6fefe0f83fdc92d9
+    /// 0xb913d9ac2b39a403a3807d20c6277abe0e8c6be4ef0f5c3c7109c27ea3e7c
+    /// 0x9ac2215a455f7337865782f9806e13f5d42d8a03672448ca043af4e4f070f
     pub fn with_trie_cursor_factory<TF>(self, trie_cursor_factory: TF) -> StorageProof<TF, H> {
         StorageProof {
             trie_cursor_factory,

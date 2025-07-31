@@ -10124,6 +10124,8 @@ version = "1.5.1"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-trie",
+ "async-stream",
  "async-trait",
  "aws-config",
  "aws-sdk-dynamodb",
@@ -10140,6 +10142,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "tracing",
  "uuid",

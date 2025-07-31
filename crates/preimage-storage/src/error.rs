@@ -1,6 +1,7 @@
 //! Error types for preimage storage operations
 
 use alloy_primitives::B256;
+use reth_db_api::DatabaseError;
 
 /// Errors that can occur during preimage storage operations
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +50,12 @@ pub enum PreimageStorageError {
     /// Generic storage error
     #[error("Storage error: {0}")]
     Storage(String),
+}
+
+impl From<DatabaseError> for PreimageStorageError {
+    fn from(error: DatabaseError) -> Self {
+        PreimageStorageError::Database(eyre::eyre!(error))
+    }
 }
 
 /// Result type for preimage storage operations

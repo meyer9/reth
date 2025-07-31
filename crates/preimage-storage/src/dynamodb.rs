@@ -1,8 +1,7 @@
 //! DynamoDB implementation for preimage storage
 
 use crate::{
-    PreimageEntry, PreimageStorage, PreimageStorageConfig, PreimageStorageError,
-    PreimageStorageResult, StorageStatistics,
+    PreimageEntry, PreimageStorage, PreimageStorageConfig, PreimageStorageError, PreimageStorageResult, StoragePreimageEntry, StorageStatistics
 };
 use alloy_primitives::B256;
 use alloy_rlp::Encodable;
@@ -120,15 +119,27 @@ impl DynamoDbPreimageStorage {
     fn entry_to_item(&self, entry: &PreimageEntry) -> HashMap<String, AttributeValue> {
         let mut item = HashMap::new();
 
+        let (path, hash, data) = match entry {
+            PreimageEntry::Account(account) => (account.path, account.hash, &account.data),
+            PreimageEntry::Storage(storage) => (storage.path, storage.hash, &storage.data),
+        };
+
         // Use hex-encoded hash as primary key
-        item.insert("hash".to_string(), AttributeValue::B(entry.hash.to_vec().into()));
+        item.insert("hash".to_string(), AttributeValue::B(hash.to_vec().into()));
 
         let mut buf = Vec::new();
-        entry.path.encode(&mut buf);
+        path.encode(&mut buf);
+
         item.insert("path".to_string(), AttributeValue::B(buf.into()));
 
+
         // Store data as binary
-        item.insert("data".to_string(), AttributeValue::B(entry.data.to_vec().into()));
+        item.insert("data".to_string(), AttributeValue::B(data.to_vec().into()));
+
+        if let PreimageEntry::Storage(StoragePreimageEntry { hashed_address, .. }) = entry {
+            item.insert("hashed_address".to_string(), AttributeValue::B(hashed_address.to_vec().into()));
+        }
+
 
         item
     }
@@ -208,7 +219,7 @@ impl PreimageStorage for DynamoDbPreimageStorage {
                 PreimageStorageError::Storage(format!("Failed to store preimage: {}", e))
             })?;
 
-        debug!("Stored preimage with hash: {:x}", entry.hash);
+        // debug!("Stored preimage with hash: {:x}", entry.hash);
         Ok(())
     }
 

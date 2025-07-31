@@ -11,6 +11,7 @@ pub mod traits;
 pub mod dynamodb;
 
 pub mod local;
+mod hash_builder_2;
 
 pub use error::{PreimageStorageError, PreimageStorageResult};
 use reth_trie::Nibbles;
@@ -19,24 +20,39 @@ pub use traits::{PreimageStorage, StorageStatistics};
 #[cfg(feature = "dynamodb")]
 pub use dynamodb::DynamoDbPreimageStorage;
 
-pub use extractor::{TriePreimageData, TriePreimageExtractor, TriePreimageStatistics};
+pub use extractor::TriePreimageExtractor;
 pub use local::LocalPreimageStorage;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AccountPreimageEntry {
+    pub hash: alloy_primitives::B256,
+    pub path: Nibbles,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoragePreimageEntry {
+    pub hash: alloy_primitives::B256,
+    pub hashed_address: alloy_primitives::B256,
+    pub path: Nibbles,
+    pub data: Vec<u8>,
+}
 
 /// A preimage entry containing a hash and its corresponding data
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PreimageEntry {
-    /// The hash of the data
-    pub hash: alloy_primitives::B256,
-    /// The path of the node in the trie (should help with pruning old preimages)
-    pub path: Nibbles,
-    /// The original data that produces the hash
-    pub data: Vec<u8>,
+pub enum PreimageEntry {
+    Storage(StoragePreimageEntry),
+    Account(AccountPreimageEntry),
 }
 
 impl PreimageEntry {
     /// Create a new preimage entry
-    pub fn new(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
-        Self { hash, path, data }
+    pub fn new_storage(hash: alloy_primitives::B256, hashed_address: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
+        Self::Storage(StoragePreimageEntry { hash, hashed_address, path, data })
+    }
+
+    pub fn new_account(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
+        Self::Account(AccountPreimageEntry { hash, path, data })
     }
 }
 

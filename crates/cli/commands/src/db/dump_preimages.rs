@@ -106,12 +106,6 @@ impl<C: ChainSpecParser> Command<C> {
         drop(provider);
 
         info!("Streaming extraction complete!");
-        info!("Statistics:");
-        info!("  Total preimages: {}", stats.total_count());
-        info!("  Account preimages: {}", stats.account_preimage_count);
-        info!("  Storage preimages: {}", stats.storage_preimage_count);
-        info!("  Total size: {} bytes", stats.total_size_bytes());
-        info!("  Average size: {:.2} bytes", stats.average_preimage_size());
 
         // Get final storage statistics
         let storage_stats = storage.get_statistics().await?;
