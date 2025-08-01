@@ -101,7 +101,7 @@ impl<C: ChainSpecParser> Command<C> {
         };
 
         // Extract and stream preimages directly to storage
-        let stats = TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage).await?;
+        TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage).await?;
 
         drop(provider);
 

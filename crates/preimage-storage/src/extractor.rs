@@ -1,19 +1,16 @@
 //! Trie preimage extractor for reading from reth database
 
-use crate::{hash_builder_2::ProofRetainer, AccountPreimageEntry, PreimageEntry, PreimageStorage, PreimageStorageError, PreimageStorageResult, StoragePreimageEntry};
-use alloy_primitives::{keccak256, FixedBytes, B256, U256};
-use alloy_rlp::{Encodable, EMPTY_STRING_CODE};
-use alloy_trie::{proof::ProofNodes};
+use crate::{hash_builder_2::ProofRetainer, AccountPreimageEntry, PreimageEntry, PreimageStorage, PreimageStorageResult, StoragePreimageEntry};
+use alloy_primitives::{keccak256, B256};
+use alloy_rlp::Encodable;
 use bytes::BufMut;
-use hex::ToHex;
 use reth_db_api::{
-    cursor::DbCursorRO, tables::{AccountsTrie, StoragesTrie}, transaction::DbTx, DatabaseError, HashedAccounts
+    transaction::DbTx, DatabaseError
 };
-use reth_primitives_traits::account;
-use reth_trie::{hashed_cursor::{HashedCursor, HashedCursorFactory}, metrics::TrieRootMetrics, node_iter::{TrieElement, TrieNodeIter}, trie_cursor::TrieCursorFactory, updates::TrieUpdates, walker::{Changes, TrieWalker}, BranchNode, BranchNodeCompact, ExtensionNode, LeafNode, Nibbles, RlpNode, StorageRoot, StorageTrieEntry, StoredNibbles, TrieType, EMPTY_ROOT_HASH};
-use reth_trie_db::{DatabaseAccountTrieCursor, DatabaseTrieCursorFactory, DatabaseHashedAccountCursor, DatabaseHashedCursorFactory};
-use std::{collections::HashMap, ops::Sub, time::Instant};
-use tracing::{debug, info, trace};
+use reth_trie::{hashed_cursor::{HashedCursorFactory}, node_iter::{TrieElement, TrieNodeIter}, trie_cursor::TrieCursorFactory, walker::{Changes, TrieWalker}, BranchNode, BranchNodeCompact, LeafNode, Nibbles, RlpNode, EMPTY_ROOT_HASH};
+use reth_trie_db::{DatabaseTrieCursorFactory, DatabaseHashedCursorFactory};
+use std::{time::Instant};
+use tracing::{info};
 use std::time::Duration;
 use reth_trie::hashed_cursor::HashedStorageCursor;
 use tokio::pin;
@@ -21,6 +18,17 @@ use tokio_stream::{Stream, StreamExt};
 use async_stream::{try_stream};
 
 use crate::hash_builder_2::HashBuilder;
+
+const FLUSH_THRESHOLD: usize = 10000;
+
+struct UniversalPrefixSet {}
+
+impl Changes for UniversalPrefixSet {
+    fn contains(&mut self, _key: &Nibbles) -> bool {
+        true
+    }
+}
+
 
 /// Estimate the percentage completion of a trie traversal based on the current nibbles path.
 /// 
@@ -32,7 +40,7 @@ use crate::hash_builder_2::HashBuilder;
 /// 
 /// # Returns
 /// A percentage value between 0.0 and 1.0 representing the estimated completion
-pub fn estimate_trie_progress_pct(nibbles: &Nibbles) -> f64 {
+fn estimate_trie_progress_pct(nibbles: &Nibbles) -> f64 {
     if nibbles.is_empty() {
         return 0.0;
     }
@@ -56,25 +64,16 @@ pub fn estimate_trie_progress_pct(nibbles: &Nibbles) -> f64 {
     total_pct
 }
 
-pub struct UniversalPrefixSet {}
-
-impl Changes for UniversalPrefixSet {
-    fn contains(&mut self, key: &Nibbles) -> bool {
-        true
-    }
-}
-
-pub struct StorageTriePreimageExtractor<H, T> {
+struct StorageTriePreimageExtractor<H, T> {
     hashed_cursor_factory: H,
     trie_cursor_factory: T,
     hashed_address: B256,
     root: B256,
 }
 
-const FLUSH_THRESHOLD: usize = 10000;
 
 impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<H, T> {
-    pub fn new(
+    fn new(
         hashed_cursor_factory: H,
         trie_cursor_factory: T,
         hashed_address: B256,
@@ -82,7 +81,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
         Self { hashed_cursor_factory, trie_cursor_factory, hashed_address, root: EMPTY_ROOT_HASH }
     }
 
-    pub fn extract_trie_preimages<'a>(
+    fn extract_trie_preimages<'a>(
         &'a mut self,
     ) -> impl Stream<Item = Result<StoragePreimageEntry, DatabaseError>> + 'a {
         try_stream! {
@@ -103,7 +102,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
 
                 while let Some(node) = node_iter.try_next()? {
                     match node {
-                        TrieElement::Branch(node) => {
+                        TrieElement::Branch(_node) => {
                             panic!("should never get branch")
                         }
                         TrieElement::Leaf(hashed_slot, value) => {
@@ -154,61 +153,24 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
             }
         }
     }
-    
 }
 
-pub struct AccountTriePreimageExtractor<H, T> {
+/// Extracts account trie preimages from the reth database.
+struct AccountTriePreimageExtractor<H, T> {
     hashed_cursor_factory: H,
     trie_cursor_factory: T,
     root: Option<B256>,
 }
 
-fn branch_node_compact_to_rlp(key: &Nibbles, branch_node_compact: &BranchNodeCompact, proof_nodes: &ProofNodes, mut get_leaf_node: impl FnMut(&Nibbles) -> Option<LeafNode>) -> Vec<u8> {
-    let mut account_rlp = Vec::new();
-
-    let mut children = Vec::new();
-    let mut hash_idx = 0;
-    for i in 0..16 {
-        if branch_node_compact.state_mask.is_bit_set(i) {
-            if branch_node_compact.hash_mask.is_bit_set(i) {
-                let child_hash = branch_node_compact.hashes[hash_idx];
-
-                hash_idx += 1;
-                children.push(RlpNode::word_rlp(&child_hash));
-            } else {
-                let mut branch_nibbles = key.clone();
-                branch_nibbles.push(i);
-
-                if let Some(proof_node) = proof_nodes.get(&branch_nibbles) {
-                    children.push(RlpNode::word_rlp(&keccak256(proof_node.as_ref())))
-                } else if let Some(leaf_node) = get_leaf_node(&branch_nibbles) {
-                    let leaf_node_rlp = leaf_node.as_ref().rlp(&mut account_rlp);
-                    children.push(RlpNode::word_rlp(&keccak256(leaf_node_rlp)))
-                } else {
-                    panic!("proof node not found for key: {:?}", branch_nibbles);
-                }
-            }
-        } else {
-            children.push(RlpNode::from_rlp(&[EMPTY_STRING_CODE]));
-        }
-    }
-
-    let branch_node = BranchNode::new(children, branch_node_compact.state_mask);
-
-    account_rlp.clear();
-    branch_node.encode(&mut account_rlp as &mut dyn BufMut);
-    account_rlp
-}
-
 impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePreimageExtractor<H, T> {
-    pub fn new(
+    fn new(
         hashed_cursor_factory: H,
         trie_cursor_factory: T,
     ) -> Self {
         Self { hashed_cursor_factory, trie_cursor_factory, root: None }
     }
 
-    pub fn extract_trie_preimages(
+    fn extract_trie_preimages(
         self,
     ) -> impl Stream<Item = Result<PreimageEntry, DatabaseError>> {
         try_stream! {
@@ -225,15 +187,12 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
             let mut hash_builder = HashBuilder::default().with_updates(true).with_proof_retainer(ProofRetainer::new());
             let mut account_rlp = Vec::new();
             
-            let mut trie_updates = TrieUpdates::default();
-            let mut total_updated_branch_nodes = 0;
-            let mut total_updated_storage_branch_nodes = 0;
             let start_time = Instant::now();
 
             while let Some(node) = node_iter.try_next().unwrap() {
                 match node {
-                    TrieElement::Branch(branch) => {
-                        //  TODO: err
+                    TrieElement::Branch(_branch) => {
+                        panic!("should never get branch")
                     }
                     TrieElement::Leaf(hashed_address, account) => {
                         let num_updated_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
@@ -251,10 +210,7 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                             info!("Estimated remaining time: {:?}", estimated_remaining_time);
                             info!("Percent complete: {:.2}%", pct_progress * 100.0);
 
-                            total_updated_branch_nodes += num_updated_branch_nodes;
                             for (key, value) in retained_proof_nodes.iter() {
-
-                                // let account_rlp = branch_node_compact_to_rlp(&key, &value, &retained_proof_nodes, |_nibbles| None);
                                 let hash_data = keccak256(&value);
                                 let account_preimage_entry = PreimageEntry::Account(AccountPreimageEntry {
                                     hash: hash_data,
@@ -291,16 +247,10 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                 }
             }
 
-            total_updated_branch_nodes += hash_builder.updated_branch_nodes.as_ref().unwrap().len();
-
-            let root = hash_builder.root();
-
-
+            hash_builder.root();
             let retained_proof_nodes = hash_builder.take_proof_nodes();
 
             for (key, value) in retained_proof_nodes.iter() {
-
-                // let account_rlp = branch_node_compact_to_rlp(&key, &value, &retained_proof_nodes, |_nibbles| None);
                 let hash_data = keccak256(&value);
                 let account_preimage_entry = PreimageEntry::Account(AccountPreimageEntry {
                     hash: hash_data,
@@ -309,7 +259,6 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                 });
                 yield account_preimage_entry;
             }
-            // Err(PreimageStorageError::Storage("not implemented".to_string()))
         }
     }
 }
@@ -338,22 +287,9 @@ impl TriePreimageExtractor {
 
         while let Some(res) = stream.next().await {
             let preimage = res?;
-            let (path, hash) = match &preimage {
-                PreimageEntry::Account(entry) => (entry.path, entry.hash),
-                PreimageEntry::Storage(entry) => (entry.path, entry.hash),
-            };
-
-            let preimage_type = match &preimage {
-                PreimageEntry::Account(_) => "account".to_string(),
-                PreimageEntry::Storage(StoragePreimageEntry { hashed_address, .. }) => format!("storage: {:x}", hashed_address),
-            };
-            // if preimage_type == "account" {
-            info!("stub: storing preimage: {} {:?} {:?}", preimage_type, path, hash);
-            // }
             storage.store_preimage(preimage).await?;
         }
 
         Ok(())
     }
-
 }
