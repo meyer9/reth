@@ -101,15 +101,17 @@ impl<C: ChainSpecParser> Command<C> {
         };
 
         // Extract and stream preimages directly to storage
-        TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage).await?;
+        let stats = TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage).await?;
 
         drop(provider);
 
         info!("Streaming extraction complete!");
 
-        // Get final storage statistics
-        let storage_stats = storage.get_statistics().await?;
-        info!("Storage complete! Stored {} preimages", storage_stats.total_preimages);
+        info!("Statistics:");
+        info!("  Account preimages: {}", stats.account_preimages);
+        info!("  Account leaves: {}", stats.account_leaves);
+        info!("  Storage preimages: {}", stats.storage_preimages);
+        info!("  Storage leaves: {}", stats.storage_leaves);
 
         Ok(())
     }

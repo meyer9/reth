@@ -20,7 +20,7 @@ pub use traits::{PreimageStorage, StorageStatistics};
 #[cfg(feature = "dynamodb")]
 pub use dynamodb::DynamoDbPreimageStorage;
 
-pub use extractor::TriePreimageExtractor;
+pub use extractor::{DumpStatistics, TriePreimageExtractor};
 pub use local::LocalPreimageStorage;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
