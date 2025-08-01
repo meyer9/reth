@@ -8,7 +8,7 @@ use alloy_rlp::Encodable;
 use async_trait::async_trait;
 use aws_config::Region;
 use aws_sdk_dynamodb::{
-    error::DisplayErrorContext, types::{AttributeDefinition, AttributeValue, DeleteRequest, KeySchemaElement, ProvisionedThroughput, PutRequest, Select, WriteRequest}, Client
+    error::DisplayErrorContext, types::{AttributeDefinition, AttributeValue, DeleteRequest, GlobalSecondaryIndex, KeySchemaElement, Projection, ProvisionedThroughput, PutRequest, Select, WriteRequest}, Client
 };
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -68,16 +68,46 @@ impl DynamoDbPreimageStorage {
             }
             Err(e) => {
                 error!("Failed to describe table '{}': {}", self.table_name, e);
-                // If the table does not exist, we can create it (hash, path, data) with hash as primary key and path as sort key
+                // If the table does not exist, create it with full_path as partition key and block_number as sort key
                 self.client.create_table()
                     .table_name(&self.table_name)
                     .key_schema(KeySchemaElement::builder()
-                        .attribute_name("hash")
+                        .attribute_name("full_path")
                         .key_type(aws_sdk_dynamodb::types::KeyType::Hash)
                         .build()
                         .map_err(|e| {
                             PreimageStorageError::Storage(format!(
-                                "Failed to create key schema: {}",
+                                "Failed to create full_path key schema: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                    .key_schema(KeySchemaElement::builder()
+                        .attribute_name("block_number")
+                        .key_type(aws_sdk_dynamodb::types::KeyType::Range)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create block_number key schema: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                    .attribute_definitions(AttributeDefinition::builder()
+                        .attribute_name("full_path")
+                        .attribute_type(aws_sdk_dynamodb::types::ScalarAttributeType::B)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create full_path attribute definition: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                    .attribute_definitions(AttributeDefinition::builder()
+                        .attribute_name("block_number")
+                        .attribute_type(aws_sdk_dynamodb::types::ScalarAttributeType::N)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create block_number attribute definition: {}",
                                 DisplayErrorContext(e)
                             ))
                         })?)
@@ -87,20 +117,55 @@ impl DynamoDbPreimageStorage {
                         .build()
                         .map_err(|e| {
                             PreimageStorageError::Storage(format!(
-                                "Failed to create attribute definition: {}",
+                                "Failed to create hash attribute definition: {}",
                                 DisplayErrorContext(e)
                             ))
                         })?)
                         .provisioned_throughput(ProvisionedThroughput::builder()
-                            .read_capacity_units(5)
-                            .write_capacity_units(5)
+                        .read_capacity_units(5)
+                        .write_capacity_units(5)
+                        .build()
+                        .map_err(|e| {
+                            PreimageStorageError::Storage(format!(
+                                "Failed to create provisioned throughput: {}",
+                                DisplayErrorContext(e)
+                            ))
+                        })?)
+                    // GSI for hash-based lookups
+                    .global_secondary_indexes(
+                        aws_sdk_dynamodb::types::GlobalSecondaryIndex::builder()
+                            .index_name("hash_index")
+                            .key_schema(KeySchemaElement::builder()
+                                .attribute_name("hash")
+                                .key_type(aws_sdk_dynamodb::types::KeyType::Hash)
+                                .build()
+                                .map_err(|e| {
+                                    PreimageStorageError::Storage(format!(
+                                        "Failed to create hash key schema: {}",
+                                        DisplayErrorContext(e)
+                                    ))
+                                })?)
+                            .projection(aws_sdk_dynamodb::types::Projection::builder()
+                                .projection_type(aws_sdk_dynamodb::types::ProjectionType::All)
+                                .build())
+                            .provisioned_throughput(ProvisionedThroughput::builder()
+                                .read_capacity_units(5)
+                                .write_capacity_units(5)
+                                .build()
+                                .map_err(|e| {
+                                    PreimageStorageError::Storage(format!(
+                                        "Failed to create GSI provisioned throughput: {}",
+                                        DisplayErrorContext(e)
+                                    ))
+                                })?)
                             .build()
                             .map_err(|e| {
                                 PreimageStorageError::Storage(format!(
-                                    "Failed to create provisioned throughput: {}",
+                                    "Failed to create hash GSI: {}",
                                     DisplayErrorContext(e)
                                 ))
-                            })?)
+                            })?
+                    )
                     .send()
                     .await
                     .map_err(|e| {
@@ -119,27 +184,25 @@ impl DynamoDbPreimageStorage {
     fn entry_to_item(&self, entry: &PreimageEntry) -> HashMap<String, AttributeValue> {
         let mut item = HashMap::new();
 
-        let (path, hash, data) = match entry {
-            PreimageEntry::Account(account) => (account.path, account.hash, &account.data),
-            PreimageEntry::Storage(storage) => (storage.path, storage.hash, &storage.data),
+        let (path, hash, data, block_number) = match entry {
+            PreimageEntry::Account(account) => (account.path, account.hash, &account.data, account.block_number),
+            PreimageEntry::Storage(storage) => (storage.path, storage.hash, &storage.data, storage.block_number),
         };
 
-        // Use hex-encoded hash as primary key
         item.insert("hash".to_string(), AttributeValue::B(hash.to_vec().into()));
-
-        let mut buf = Vec::new();
-        path.encode(&mut buf);
-
-        item.insert("path".to_string(), AttributeValue::B(buf.into()));
-
-
-        // Store data as binary
+        item.insert("block_number".to_string(), AttributeValue::N(block_number.to_string()));
         item.insert("data".to_string(), AttributeValue::B(data.to_vec().into()));
 
         if let PreimageEntry::Storage(StoragePreimageEntry { hashed_address, .. }) = entry {
-            item.insert("hashed_address".to_string(), AttributeValue::B(hashed_address.to_vec().into()));
+            let mut storage_path = Vec::new();
+            hashed_address.encode(&mut storage_path);
+            path.encode(&mut storage_path);
+            item.insert("full_path".to_string(), AttributeValue::B(storage_path.into()));
+        } else {
+            let mut account_path = Vec::new();
+            path.encode(&mut account_path);
+            item.insert("full_path".to_string(), AttributeValue::B(account_path.into()));
         }
-
 
         item
     }
@@ -182,11 +245,6 @@ impl DynamoDbPreimageStorage {
             let mut request_items = HashMap::new();
             request_items.insert(self.table_name.clone(), write_requests);
 
-            info!(
-                "DynamoDB: Storing {} preimages in batch of size {}",
-                chunk.len(),
-                self.batch_size
-            );
             self.client
                 .batch_write_item()
                 .set_request_items(Some(request_items))
@@ -228,7 +286,6 @@ impl PreimageStorage for DynamoDbPreimageStorage {
             return Ok(());
         }
 
-        info!("Storing {} preimages in batches", entries.len());
         self.store_preimages_batch(entries).await
     }
 

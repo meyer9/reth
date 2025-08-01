@@ -26,6 +26,7 @@ pub use local::LocalPreimageStorage;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountPreimageEntry {
     pub hash: alloy_primitives::B256,
+    pub block_number: u64,
     pub path: Nibbles,
     pub data: Vec<u8>,
 }
@@ -33,6 +34,7 @@ pub struct AccountPreimageEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoragePreimageEntry {
     pub hash: alloy_primitives::B256,
+    pub block_number: u64,
     pub hashed_address: alloy_primitives::B256,
     pub path: Nibbles,
     pub data: Vec<u8>,
@@ -47,12 +49,12 @@ pub enum PreimageEntry {
 
 impl PreimageEntry {
     /// Create a new preimage entry
-    pub fn new_storage(hash: alloy_primitives::B256, hashed_address: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
-        Self::Storage(StoragePreimageEntry { hash, hashed_address, path, data })
+    pub fn new_storage(hash: alloy_primitives::B256, hashed_address: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: Option<u64>) -> Self {
+        Self::Storage(StoragePreimageEntry { block_number: block_number.unwrap_or(0), hash, hashed_address, path, data })
     }
 
-    pub fn new_account(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>) -> Self {
-        Self::Account(AccountPreimageEntry { hash, path, data })
+    pub fn new_account(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: Option<u64>) -> Self {
+        Self::Account(AccountPreimageEntry { block_number: block_number.unwrap_or(0), hash, path, data })
     }
 }
 

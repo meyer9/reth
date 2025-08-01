@@ -15,11 +15,11 @@ use std::time::Duration;
 use reth_trie::hashed_cursor::HashedStorageCursor;
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
-use async_stream::{try_stream};
+use async_stream::{try_stream, stream};
 
 use crate::hash_builder_2::HashBuilder;
 
-const FLUSH_THRESHOLD: usize = 10000;
+const FLUSH_THRESHOLD: usize = 1000;
 
 /// Statistics collected during trie preimage dump operations
 #[derive(Debug, Clone, Default)]
@@ -109,7 +109,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
     fn extract_trie_preimages<'a>(
         &'a mut self,
         stats: &'a mut DumpStatistics,
-    ) -> impl Stream<Item = Result<StoragePreimageEntry, DatabaseError>> + use<'a, H, T> {
+    ) -> impl Stream<Item = Result<PreimageEntry, DatabaseError>> + use<'a, H, T> {
         try_stream! {
             let mut hashed_storage_cursor =
                 self.hashed_cursor_factory.hashed_storage_cursor(self.hashed_address)?;
@@ -126,6 +126,8 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
                     hashed_storage_cursor,
                 );
 
+                let start_time = Instant::now();
+
                 while let Some(node) = node_iter.try_next()? {
                     match node {
                         TrieElement::Branch(_node) => {
@@ -133,7 +135,6 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
                         }
                         TrieElement::Leaf(hashed_slot, value) => {
                             stats.storage_leaves += 1;
-                            info!("adding leaf: {:?} {:x}", hashed_slot, value);
                             hash_builder.add_leaf(
                                 Nibbles::unpack(hashed_slot),
                                 alloy_rlp::encode_fixed_size(&value).as_ref(),
@@ -144,16 +145,20 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
                     let num_updated_storage_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
                     if num_updated_storage_branch_nodes >= FLUSH_THRESHOLD {
                         let proof_nodes = hash_builder.take_proof_nodes();
-                        let (new_hash_builder, _updated_branch_nodes) = hash_builder.split();
+                        let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
+
+                        let last_node_processed = updated_branch_nodes.keys().last().unwrap();
+                        let pct_progress = estimate_trie_progress_pct(last_node_processed);
+                        let elapsed = start_time.elapsed();
+                        let estimated_total_time = if pct_progress > 0.0 { elapsed.div_f64(pct_progress) } else { Duration::from_secs(0) };
+                        let estimated_remaining_time = estimated_total_time.checked_sub(elapsed).unwrap_or(Duration::from_secs(0));
+                        info!("Storage trie {:x} - Estimated remaining time: {:?}", self.hashed_address, estimated_remaining_time);
+                        info!("Storage trie {:x} - Percent complete: {:.2}%", self.hashed_address, pct_progress * 100.0);
+                        info!("Storage trie {:x} - Last node processed: {:?}", self.hashed_address, last_node_processed);
 
                         for (key, value) in proof_nodes.iter() {
                             let hash_data = keccak256(&value);
-                            let storage_preimage_entry = StoragePreimageEntry {
-                                hash: hash_data,
-                                hashed_address: self.hashed_address,
-                                path: *key,
-                                data: value.to_vec(),
-                            };
+                            let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), None);
                             stats.storage_preimages += 1;
                             yield storage_preimage_entry;
                         }
@@ -168,12 +173,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
 
                 for (key, value) in proof_nodes.iter() {
                     let hash_data = keccak256(&value);
-                    let storage_preimage_entry = StoragePreimageEntry {
-                        hash: hash_data,
-                        hashed_address: self.hashed_address,
-                        path: *key,
-                        data: value.to_vec(),
-                    };
+                    let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), None);
                     stats.storage_preimages += 1;
                     yield storage_preimage_entry;
                 }
@@ -232,24 +232,21 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                             let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
 
                             let last_node_processed = updated_branch_nodes.keys().last().unwrap();
-
                             let pct_progress = estimate_trie_progress_pct(last_node_processed);
                             let elapsed = start_time.elapsed();
                             let estimated_total_time = if pct_progress > 0.0 { elapsed.div_f64(pct_progress) } else { Duration::from_secs(0) };
                             let estimated_remaining_time = estimated_total_time.checked_sub(elapsed).unwrap_or(Duration::from_secs(0));
                             info!("Estimated remaining time: {:?}", estimated_remaining_time);
                             info!("Percent complete: {:.2}%", pct_progress * 100.0);
+                            info!("Last node processed: {:?}", last_node_processed);
 
                             for (key, value) in retained_proof_nodes.iter() {
                                 let hash_data = keccak256(&value);
-                                let account_preimage_entry = PreimageEntry::Account(AccountPreimageEntry {
-                                    hash: hash_data,
-                                    path: *key,
-                                    data: value.to_vec(),
-                                });
+                                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), None);
                                 stats.account_preimages += 1;
                                 yield account_preimage_entry;
                             }
+
                             hash_builder = new_hash_builder.with_proof_retainer(ProofRetainer::new());
                             hash_builder.set_updates(true);
 
@@ -264,11 +261,9 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                         {
                             pin!(storage_stream);
                             while let Some(res) = storage_stream.next().await {
-                                yield PreimageEntry::Storage(res?);
+                                yield res?;
                             }
                         }
-
-                        info!("storage root: {:?} {:x}", storage_root_extractor.root, hashed_address);
 
                         account_rlp.clear();
                         let account = account.into_trie_account(storage_root_extractor.root);
@@ -283,14 +278,28 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
 
             for (key, value) in retained_proof_nodes.iter() {
                 let hash_data = keccak256(&value);
-                let account_preimage_entry = PreimageEntry::Account(AccountPreimageEntry {
-                    hash: hash_data,
-                    path: *key,
-                    data: value.to_vec(),
-                });
+                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), None);
                 stats.account_preimages += 1;
                 yield account_preimage_entry;
             }
+        }
+    }
+}
+
+// Takes a stream of items and batches them into chunks of size `batch_size`
+fn batch_stream<T: Clone>(stream: impl Stream<Item = T>, batch_size: usize) -> impl Stream<Item = Vec<T>> {
+    stream! {
+        pin!(stream);
+        let mut batch = Vec::new();
+        while let Some(item) = stream.next().await {
+            batch.push(item);
+            if batch.len() >= batch_size {
+                yield batch.clone();
+                batch.clear();
+            }
+        }
+        if !batch.is_empty() {
+            yield batch;
         }
     }
 }
@@ -319,10 +328,16 @@ impl TriePreimageExtractor {
 
             pin!(stream);
 
-            while let Some(res) = stream.next().await {
-                let preimage = res?;
-                storage.store_preimage(preimage).await?;
+            let batch_stream = batch_stream(stream, 25);
+
+            pin!(batch_stream);
+
+            while let Some(batch) = batch_stream.next().await {
+                // handle errors
+                let batch = batch.into_iter().collect::<Result<Vec<PreimageEntry>, DatabaseError>>()?;
+                storage.store_preimages(batch).await?;
             }
+
         }
 
         Ok(stats.clone())
