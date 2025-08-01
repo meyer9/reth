@@ -328,7 +328,7 @@ impl TriePreimageExtractor {
 
             pin!(stream);
 
-            let batch_stream = batch_stream(stream, 25);
+            let batch_stream = batch_stream(stream, 1000G);
 
             pin!(batch_stream);
 

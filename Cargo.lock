@@ -10131,6 +10131,7 @@ dependencies = [
  "aws-sdk-dynamodb",
  "bytes",
  "eyre",
+ "futures",
  "hex",
  "reth-db-api",
  "reth-primitives-traits",

@@ -10,7 +10,9 @@ use aws_config::Region;
 use aws_sdk_dynamodb::{
     error::DisplayErrorContext, types::{AttributeDefinition, AttributeValue, DeleteRequest, GlobalSecondaryIndex, KeySchemaElement, Projection, ProvisionedThroughput, PutRequest, Select, WriteRequest}, Client
 };
-use std::collections::HashMap;
+use futures::future::join_all;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 /// DynamoDB implementation of PreimageStorage
@@ -19,6 +21,10 @@ pub struct DynamoDbPreimageStorage {
     client: Client,
     table_name: String,
     batch_size: usize,
+    /// Semaphore to limit concurrent batch write operations
+    write_semaphore: Arc<Semaphore>,
+    /// Maximum number of concurrent batch operations
+    max_concurrent_batches: usize,
 }
 
 impl DynamoDbPreimageStorage {
@@ -51,8 +57,18 @@ impl DynamoDbPreimageStorage {
             Client::new(&aws_config)
         };
 
+        // Configure concurrency settings
+        let max_concurrent_batches = 10; // DynamoDB can handle decent concurrent load
+        let write_semaphore = Arc::new(Semaphore::new(max_concurrent_batches));
+
         // Verify table exists
-        let storage = Self { client, table_name, batch_size: config.batch_size };
+        let storage = Self { 
+            client, 
+            table_name, 
+            batch_size: config.batch_size,
+            write_semaphore,
+            max_concurrent_batches,
+        };
 
         storage.ensure_table_exists().await?;
 
@@ -220,42 +236,122 @@ impl DynamoDbPreimageStorage {
         Ok(data.clone().as_ref().into())
     }
 
-    /// Store preimages in batches
+    /// Store preimages in batches with parallel execution
     async fn store_preimages_batch(
         &self,
         entries: Vec<PreimageEntry>,
     ) -> PreimageStorageResult<()> {
-        let chunks = entries.chunks(self.batch_size);
+        if entries.is_empty() {
+            return Ok(());
+        }
 
-        for chunk in chunks {
-            let write_requests: Vec<WriteRequest> = chunk
-                .iter()
-                .map(|entry| {
-                    WriteRequest::builder()
-                        .put_request(
-                            PutRequest::builder()
-                                .set_item(Some(self.entry_to_item(entry)))
-                                .build()
-                                .unwrap(),
-                        )
-                        .build()
-                })
-                .collect();
+        debug!("Processing {} preimages in parallel batches of {}", entries.len(), self.batch_size);
+        
+        // Split into chunks and create futures for parallel execution
+        let batch_futures: Vec<_> = entries
+            .chunks(self.batch_size)
+            .map(|chunk| {
+                let chunk_vec = chunk.to_vec();
+                self.store_single_batch(chunk_vec)
+            })
+            .collect();
 
-            let mut request_items = HashMap::new();
-            request_items.insert(self.table_name.clone(), write_requests);
+        // Execute all batches in parallel
+        let results = join_all(batch_futures).await;
 
-            self.client
+        // Check for any failures
+        let mut error_count = 0;
+        for result in results {
+            if let Err(e) = result {
+                error!("Batch write failed: {}", e);
+                error_count += 1;
+            }
+        }
+
+        if error_count > 0 {
+            return Err(PreimageStorageError::BatchOperationFailed(format!(
+                "{} out of {} batches failed",
+                error_count,
+                entries.len() / self.batch_size + if entries.len() % self.batch_size > 0 { 1 } else { 0 }
+            )));
+        }
+
+        debug!("Successfully stored {} preimages", entries.len());
+        Ok(())
+    }
+
+    /// Store a single batch with semaphore-controlled concurrency
+    async fn store_single_batch(&self, chunk: Vec<PreimageEntry>) -> PreimageStorageResult<()> {
+        // Acquire semaphore permit to limit concurrency
+        let _permit = self.write_semaphore.acquire().await.map_err(|e| {
+            PreimageStorageError::Storage(format!("Failed to acquire semaphore: {}", e))
+        })?;
+
+        let write_requests: Vec<WriteRequest> = chunk
+            .iter()
+            .map(|entry| {
+                WriteRequest::builder()
+                    .put_request(
+                        PutRequest::builder()
+                            .set_item(Some(self.entry_to_item(entry)))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+            })
+            .collect();
+
+        let mut request_items = HashMap::new();
+        request_items.insert(self.table_name.clone(), write_requests);
+
+        // Retry logic for failed requests
+        let mut retry_count = 0;
+        const MAX_RETRIES: u32 = 3;
+
+        loop {
+            match self.client
                 .batch_write_item()
-                .set_request_items(Some(request_items))
+                .set_request_items(Some(request_items.clone()))
                 .send()
                 .await
-                .map_err(|e| {
-                    PreimageStorageError::BatchOperationFailed(format!(
-                        "Failed to write batch: {}",
-                        e
-                    ))
-                })?;
+            {
+                Ok(response) => {
+                    // Check for unprocessed items and retry if needed
+                    if let Some(unprocessed) = response.unprocessed_items() {
+                        if !unprocessed.is_empty() && retry_count < MAX_RETRIES {
+                            warn!("Retrying {} unprocessed items (attempt {})", 
+                                unprocessed.len(), retry_count + 1);
+                            request_items = unprocessed.clone();
+                            retry_count += 1;
+                            // Exponential backoff
+                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                100 * (1 << retry_count)
+                            )).await;
+                            continue;
+                        } else if !unprocessed.is_empty() {
+                            return Err(PreimageStorageError::BatchOperationFailed(format!(
+                                "Failed to process {} items after {} retries",
+                                unprocessed.len(), MAX_RETRIES
+                            )));
+                        }
+                    }
+                    break;
+                }
+                Err(e) if retry_count < MAX_RETRIES => {
+                    warn!("Batch write failed, retrying (attempt {}): {}", retry_count + 1, e);
+                    retry_count += 1;
+                    // Exponential backoff
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        100 * (1 << retry_count)
+                    )).await;
+                }
+                Err(e) => {
+                    return Err(PreimageStorageError::BatchOperationFailed(format!(
+                        "Failed to write batch after {} retries: {}",
+                        MAX_RETRIES, e
+                    )));
+                }
+            }
         }
 
         Ok(())
@@ -290,68 +386,68 @@ impl PreimageStorage for DynamoDbPreimageStorage {
     }
 
     async fn get_preimage(&self, hash: &B256) -> PreimageStorageResult<Option<Vec<u8>>> {
-        let mut key = HashMap::new();
-        key.insert("hash".to_string(), AttributeValue::S(format!("{:x}", hash)));
-
+        // Query the hash GSI to find items with this hash
         let response = self
             .client
-            .get_item()
+            .query()
             .table_name(&self.table_name)
-            .set_key(Some(key))
+            .index_name("hash_index")
+            .key_condition_expression("#hash = :hash_val")
+            .expression_attribute_names("#hash", "hash")
+            .expression_attribute_values(":hash_val", AttributeValue::B(hash.to_vec().into()))
+            .limit(1) // We only need one result
             .send()
             .await
             .map_err(|e| PreimageStorageError::Storage(format!("Failed to get preimage: {}", e)))?;
 
-        if let Some(item) = response.item {
-            Ok(Some(self.get_item_data(&item)?))
-        } else {
-            Ok(None)
+        if let Some(items) = response.items {
+            if let Some(item) = items.first() {
+                return Ok(Some(self.get_item_data(item)?));
+            }
         }
+
+        Ok(None)
     }
 
     async fn get_preimages(&self, hashes: &[B256]) -> PreimageStorageResult<Vec<Vec<u8>>> {
-        let mut results = Vec::new();
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        // Process hashes in batches (DynamoDB has a limit of 100 items per batch_get_item)
-        for chunk in hashes.chunks(100) {
-            let mut keys = Vec::new();
-            for hash in chunk {
-                let mut key = HashMap::new();
-                key.insert("hash".to_string(), AttributeValue::S(format!("{:x}", hash)));
-                keys.push(key);
-            }
+        debug!("Retrieving {} preimages in parallel", hashes.len());
 
-            let keys_and_attributes = aws_sdk_dynamodb::types::KeysAndAttributes::builder()
-                .set_keys(Some(keys))
-                .build()
-                .unwrap();
+        // Create futures for parallel queries
+        let query_futures: Vec<_> = hashes
+            .iter()
+            .map(|hash| self.get_preimage(hash))
+            .collect();
 
-            let mut request_items = HashMap::new();
-            request_items.insert(self.table_name.clone(), keys_and_attributes);
+        // Execute all queries in parallel
+        let results = join_all(query_futures).await;
 
-            let response = self
-                .client
-                .batch_get_item()
-                .set_request_items(Some(request_items))
-                .send()
-                .await
-                .map_err(|e| {
-                    PreimageStorageError::BatchOperationFailed(format!(
-                        "Failed to get preimages: {}",
-                        e
-                    ))
-                })?;
+        // Collect successful results
+        let mut preimages = Vec::new();
+        let mut error_count = 0;
 
-            if let Some(responses) = response.responses {
-                if let Some(items) = responses.get(&self.table_name) {
-                    for item in items {
-                        results.push(self.get_item_data(item)?.into());
-                    }
+        for result in results {
+            match result {
+                Ok(Some(data)) => preimages.push(data),
+                Ok(None) => {
+                    // Hash not found, continue
+                }
+                Err(e) => {
+                    error!("Failed to get preimage: {}", e);
+                    error_count += 1;
                 }
             }
         }
 
-        Ok(results)
+        if error_count > 0 {
+            warn!("{} preimage queries failed out of {}", error_count, hashes.len());
+        }
+
+        debug!("Successfully retrieved {} preimages", preimages.len());
+        Ok(preimages)
     }
 
     async fn contains_preimage(&self, hash: &B256) -> PreimageStorageResult<bool> {
