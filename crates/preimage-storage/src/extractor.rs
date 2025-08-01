@@ -19,7 +19,7 @@ use async_stream::{try_stream, stream};
 
 use crate::hash_builder_2::HashBuilder;
 
-const FLUSH_THRESHOLD: usize = 1000;
+const FLUSH_THRESHOLD: usize = 200;
 
 /// Statistics collected during trie preimage dump operations
 #[derive(Debug, Clone, Default)]
@@ -142,7 +142,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
                         }
                     }
                     
-                    let num_updated_storage_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+                    let num_updated_storage_branch_nodes = hash_builder.proof_retainer.as_ref().unwrap().len();
                     if num_updated_storage_branch_nodes >= FLUSH_THRESHOLD {
                         let proof_nodes = hash_builder.take_proof_nodes();
                         let (new_hash_builder, updated_branch_nodes) = hash_builder.split();
@@ -225,7 +225,7 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                     }
                     TrieElement::Leaf(hashed_address, account) => {
                         stats.account_leaves += 1;
-                        let num_updated_branch_nodes = hash_builder.updated_branch_nodes.as_ref().unwrap().len();
+                        let num_updated_branch_nodes = hash_builder.proof_retainer.as_ref().unwrap().len();
 
                         if num_updated_branch_nodes >= FLUSH_THRESHOLD {
                             let retained_proof_nodes = hash_builder.take_proof_nodes();

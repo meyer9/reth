@@ -39,6 +39,10 @@ impl ProofRetainer {
             self.proof_nodes.insert(*prefix, Bytes::from(proof.to_vec()));
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.proof_nodes.len()
+    }
 }
 
 
