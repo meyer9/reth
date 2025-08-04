@@ -21,6 +21,7 @@ use reth_trie_db::{
 };
 use revm_database::BundleState;
 use std::{fmt::Debug, sync::Arc};
+use futures::executor::block_on;
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
 #[derive(Debug)]

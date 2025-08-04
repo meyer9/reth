@@ -58,7 +58,7 @@ impl DynamoDbPreimageStorage {
         };
 
         // Configure concurrency settings
-        let max_concurrent_batches = 10; // DynamoDB can handle decent concurrent load
+        let max_concurrent_batches = 100; // DynamoDB can handle decent concurrent load
         let write_semaphore = Arc::new(Semaphore::new(max_concurrent_batches));
 
         // Verify table exists
@@ -306,7 +306,7 @@ impl DynamoDbPreimageStorage {
 
         // Retry logic for failed requests
         let mut retry_count = 0;
-        const MAX_RETRIES: u32 = 3;
+        const MAX_RETRIES: u32 = 500;
 
         loop {
             match self.client
@@ -319,8 +319,8 @@ impl DynamoDbPreimageStorage {
                     // Check for unprocessed items and retry if needed
                     if let Some(unprocessed) = response.unprocessed_items() {
                         if !unprocessed.is_empty() && retry_count < MAX_RETRIES {
-                            warn!("Retrying {} unprocessed items (attempt {})", 
-                                unprocessed.len(), retry_count + 1);
+                            // warn!("Retrying {} unprocessed items (attempt {})", 
+                            //     unprocessed.len(), retry_count + 1);
                             request_items = unprocessed.clone();
                             retry_count += 1;
                             // Exponential backoff
@@ -338,7 +338,7 @@ impl DynamoDbPreimageStorage {
                     break;
                 }
                 Err(e) if retry_count < MAX_RETRIES => {
-                    warn!("Batch write failed, retrying (attempt {}): {}", retry_count + 1, e);
+                    warn!("Batch write failed, retrying (attempt {}): {}", retry_count + 1, DisplayErrorContext(e));
                     retry_count += 1;
                     // Exponential backoff
                     tokio::time::sleep(tokio::time::Duration::from_millis(
@@ -348,7 +348,7 @@ impl DynamoDbPreimageStorage {
                 Err(e) => {
                     return Err(PreimageStorageError::BatchOperationFailed(format!(
                         "Failed to write batch after {} retries: {}",
-                        MAX_RETRIES, e
+                        MAX_RETRIES, DisplayErrorContext(e)
                     )));
                 }
             }

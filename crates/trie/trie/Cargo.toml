@@ -43,6 +43,13 @@ metrics = { workspace = true, optional = true }
 # `test-utils` feature
 triehash = { workspace = true, optional = true }
 
+# AWS SDK
+aws-config = "1.0"
+aws-sdk-dynamodb = "1.0"
+
+tokio.workspace = true
+async-trait.workspace = true
+
 [dev-dependencies]
 # reth
 reth-ethereum-primitives = { workspace = true, features = ["arbitrary", "std"] }

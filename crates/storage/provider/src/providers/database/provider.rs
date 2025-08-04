@@ -77,7 +77,7 @@ use std::{
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
     sync::{mpsc, Arc},
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, info};
 
 /// A [`DatabaseProvider`] that holds a read-only database transaction.
 pub type DatabaseProviderRO<DB, N> = DatabaseProvider<<DB as Database>::TX, N>;
@@ -396,11 +396,12 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         self,
         mut block_number: BlockNumber,
     ) -> ProviderResult<StateProviderBox> {
+        info!(target: "providers::database", ?block_number, "Trying to convert to historical state provider");
         // if the block number is the same as the currently best block number on disk we can use the
         // latest state provider here
-        if block_number == self.best_block_number().unwrap_or_default() {
-            return Ok(Box::new(LatestStateProvider::new(self)))
-        }
+        // if block_number == self.best_block_number().unwrap_or_default() {
+        //     return Ok(Box::new(LatestStateProvider::new(self)))
+        // }
 
         // +1 as the changeset that we want is the one that was applied after this block.
         block_number += 1;

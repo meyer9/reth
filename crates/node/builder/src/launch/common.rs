@@ -74,7 +74,7 @@ use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, StaticFileProvider},
     BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, ProviderError,
     ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
-    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore
+    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore, DynamoDBExternalTrieStore
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -470,7 +470,7 @@ where
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
         let historical_cache = Arc::new(
-            InMemoryExternalTrieStore::new()
+            DynamoDBExternalTrieStore::new("manual_base_mainnet_historical_snapshot".to_string(), Some("us-east-1".to_string()), None).await.unwrap()
         );
 
         let factory = ProviderFactory::new(

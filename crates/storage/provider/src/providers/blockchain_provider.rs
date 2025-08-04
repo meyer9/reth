@@ -48,7 +48,7 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use tracing::trace;
+use tracing::{info, trace};
 
 /// The main type for interacting with the blockchain.
 ///
@@ -582,8 +582,14 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
         &self,
         number_or_tag: BlockNumberOrTag,
     ) -> ProviderResult<StateProviderBox> {
+        info!(target: "providers::blockchain", ?number_or_tag, "Getting state by block number or tag");
         match number_or_tag {
-            BlockNumberOrTag::Latest => self.latest(),
+            BlockNumberOrTag::Latest => {
+                // we can only get the finalized state by hash, not by num
+                let hash =
+                    self.latest_header()?.ok_or(ProviderError::FinalizedBlockNotFound)?.hash();
+                self.state_by_block_hash(hash)
+            },
             BlockNumberOrTag::Finalized => {
                 // we can only get the finalized state by hash, not by num
                 let hash =

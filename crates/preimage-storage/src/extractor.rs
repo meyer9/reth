@@ -19,7 +19,7 @@ use async_stream::{try_stream, stream};
 
 use crate::hash_builder_2::HashBuilder;
 
-const FLUSH_THRESHOLD: usize = 200;
+const FLUSH_THRESHOLD: usize = 2000;
 
 /// Statistics collected during trie preimage dump operations
 #[derive(Debug, Clone, Default)]
@@ -328,7 +328,7 @@ impl TriePreimageExtractor {
 
             pin!(stream);
 
-            let batch_stream = batch_stream(stream, 1000G);
+            let batch_stream = batch_stream(stream, 1000);
 
             pin!(batch_stream);
 

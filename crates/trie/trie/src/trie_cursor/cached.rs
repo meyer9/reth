@@ -1,13 +1,146 @@
 use crate::{hashed_cursor::HashedCursorFactory, BranchNodeCompact, Nibbles};
 use alloy_primitives::B256;
 use reth_storage_errors::{db::DatabaseError, provider::ProviderError};
+use reth_trie_common::BranchNode;
 use tracing::info;
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
+// Add DynamoDB imports
+use aws_sdk_dynamodb::{
+    error::DisplayErrorContext,
+    types::{AttributeDefinition, AttributeValue, KeySchemaElement, ProvisionedThroughput},
+    Client,
+};
+use aws_config::Region;
+use alloy_rlp::{Decodable, Encodable};
+use async_trait::async_trait;
 
 use super::{TrieCursor, TrieCursorFactory};
 
-/// Example in-memory external cache for trie nodes.
+/// DynamoDB-based external trie store for caching trie nodes
+#[derive(Debug)]
+pub struct DynamoDBExternalTrieStore {
+    client: Client,
+    table_name: String,
+    runtime_handle: tokio::runtime::Runtime,
+}
 
+impl DynamoDBExternalTrieStore {
+    /// Create a new DynamoDB external trie store
+    pub async fn new(
+        table_name: String,
+        aws_region: Option<String>,
+        dynamodb_endpoint_url: Option<String>,
+    ) -> Result<Self, ProviderError> {
+        // Load AWS configuration with optional custom endpoint
+        let mut aws_config_builder =
+            aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
+
+        // Set region if provided
+        if let Some(region) = aws_region {
+            aws_config_builder = aws_config_builder.region(Region::new(region));
+        }
+
+        let aws_config = aws_config_builder.load().await;
+
+        // Create client with optional custom endpoint
+        let client = if let Some(endpoint_url) = dynamodb_endpoint_url {
+            info!("Using custom DynamoDB endpoint: {}", endpoint_url);
+            Client::from_conf(
+                aws_sdk_dynamodb::config::Builder::from(&aws_config)
+                    .endpoint_url(endpoint_url)
+                    .build(),
+            )
+        } else {
+            Client::new(&aws_config)
+        };
+
+        let new_thread_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let store = Self { client, table_name, runtime_handle: new_thread_runtime };
+
+        Ok(store)
+    }
+
+    /// Convert Nibbles path to DynamoDB key
+    fn path_to_key(&self, path: &Nibbles) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        path.encode(&mut encoded);
+        encoded
+    }
+
+    /// Convert DynamoDB item to BranchNodeCompact
+    fn item_to_node(&self, item: &HashMap<String, AttributeValue>) -> Result<BranchNodeCompact, ProviderError> {
+        let node_data = item
+            .get("data")
+            .and_then(|v| v.as_b().ok())
+            .ok_or_else(|| {
+                ProviderError::Database(DatabaseError::Other("Missing node_data field".to_string()))
+            })?;
+
+        let hash = item
+            .get("hash")
+            .and_then(|v| v.as_b().ok())
+            .ok_or_else(|| {
+                ProviderError::Database(DatabaseError::Other("Missing hash field".to_string()))
+            })?;
+
+        if hash.as_ref().len() != 32 {
+            return Err(ProviderError::Database(DatabaseError::Other("Invalid hash length".to_string())));
+        }
+
+        let hash = B256::from_slice(hash.as_ref());
+
+        let mut node_data = node_data.as_ref(); 
+        let branch_node = BranchNode::decode(&mut node_data)?;
+
+        let branch_node_compact = BranchNodeCompact::new(
+            branch_node.state_mask,
+            branch_node.state_mask,
+            branch_node.state_mask,
+            branch_node.stack.iter().map(|node| B256::from_slice(node.as_slice())).collect(),
+            Some(hash),
+        );
+
+        Ok(branch_node_compact)
+    }
+}
+
+#[async_trait]
+impl ExternalTrieStore for DynamoDBExternalTrieStore {
+    async fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+        let mut key_map = HashMap::new();
+        key_map.insert("path".to_string(), AttributeValue::B(self.path_to_key(key).into()));
+        key_map.insert("block_number".to_string(), AttributeValue::N("0".to_string()));
+
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .set_key(Some(key_map))
+            .send()
+            .await
+            .map_err(|e| {
+                ProviderError::Database(DatabaseError::Other(format!(
+                    "Failed to get trie node: {}",
+                    DisplayErrorContext(e)
+                )))
+            })?;
+
+        if let Some(item) = response.item {
+            let node = self.item_to_node(&item)?;
+            info!("Retrieved trie node from DynamoDB for key: {:?}", key);
+            Ok(Some(node))
+        } else {
+            info!("Trie node not found in DynamoDB for key: {:?}", key);
+            Ok(None)
+        }
+    }
+}
+
+/// Example in-memory external cache for trie nodes.
 #[derive(Debug, Clone)]
 pub struct InMemoryExternalTrieStore {
 }
@@ -19,37 +152,19 @@ impl InMemoryExternalTrieStore {
     }
 }
 
+#[async_trait]
 impl ExternalTrieStore for InMemoryExternalTrieStore {
-    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+    async fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
         info!("Fetching trie node from cache for key: {:?}", key);
         Ok(None)
     }
-    fn get_trie_nodes(
-        &self,
-        keys: &[Nibbles],
-    ) -> Result<Vec<Option<BranchNodeCompact>>, ProviderError> {
-        Ok(
-            keys.iter()
-                .map(|key| {
-                    info!("Fetching trie node from cache for key: {:?}", key);
-                    None
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-
 }
 
 /// Trait for external key-value storage of trie nodes.
+#[async_trait]
 pub trait ExternalTrieStore: Send + Sync + Debug {
     /// Get a trie node by its key.
-    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError>;
-
-    /// Get multiple trie nodes by their keys.
-    fn get_trie_nodes(
-        &self,
-        keys: &[Nibbles],
-    ) -> Result<Vec<Option<BranchNodeCompact>>, ProviderError>;
+    async fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError>;
 }
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
@@ -71,17 +186,18 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        // First try the cache
-        if let Some(node) = self.cache.get_trie_node(&key).map_err(|e| {
-            DatabaseError::Other(format!("Cache error: {e}"))
-        })? {
-            return Ok(Some((key, node)));
-        }
 
-        // Fall back to inner cursor
-        let result = self.inner.seek_exact(key)?;
+            // First try the cache
+            if let Some(node) = self.cache.get_trie_node(&key).map_err(|e| {
+                DatabaseError::Other(format!("Cache error: {e}"))
+            })? {
+                return Ok(Some((key, node)));
+            }
 
-        Ok(result)
+            // Fall back to inner cursor
+            let result = self.inner.seek_exact(key)?;
+
+            Ok(result)
     }
 
     fn seek(
@@ -89,9 +205,9 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         // For seek operations, we can't easily check cache first since we need >= behavior
-        let result = self.inner.seek(key)?;
+        let result = self.inner.seek(key);
 
-        Ok(result)
+        result
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
