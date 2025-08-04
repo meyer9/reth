@@ -12,6 +12,7 @@ use alloy_primitives::{
     Address, B256,
 };
 use alloy_rlp::{BufMut, Encodable};
+use tracing::info;
 use reth_execution_errors::trie::StateProofError;
 use reth_trie_common::{
     proof::ProofRetainer, AccountProof, MultiProof, MultiProofTargets, StorageMultiProof,
@@ -105,6 +106,7 @@ where
         mut self,
         mut targets: MultiProofTargets,
     ) -> Result<MultiProof, StateProofError> {
+        info!("Generating multiproof for targets: {:?}", targets);
         let hashed_account_cursor = self.hashed_cursor_factory.hashed_account_cursor()?;
         let trie_cursor = self.trie_cursor_factory.account_trie_cursor()?;
 

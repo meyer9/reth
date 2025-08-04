@@ -74,7 +74,8 @@ use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, StaticFileProvider},
     BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, ProviderError,
     ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
-    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore, DynamoDBExternalTrieStore
+    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore, DynamoDBExternalTrieStore,
+    DynamoDBExternalTrieStoreHandle
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -469,16 +470,21 @@ where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
-        let historical_cache = Arc::new(
-            DynamoDBExternalTrieStore::new("manual_base_mainnet_historical_snapshot".to_string(), Some("us-east-1".to_string()), None).await.unwrap()
-        );
+
+        let (tx, mut rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let historical_cache = Arc::new(
+                DynamoDBExternalTrieStore::new("manual_base_mainnet_historical_snapshot".to_string(), Some("us-east-1".to_string()), None).await.unwrap()
+            );
+            historical_cache.serve(&mut rx).await;
+        });
 
         let factory = ProviderFactory::new(
             self.right().clone(),
             self.chain_spec(),
             StaticFileProvider::read_write(self.data_dir().static_files())?,
         )
-        .with_trie_cache(historical_cache)
+        .with_trie_cache(Arc::new(DynamoDBExternalTrieStoreHandle::new(tx)))
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 
