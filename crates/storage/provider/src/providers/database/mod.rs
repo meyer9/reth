@@ -33,7 +33,7 @@ use revm_database::BundleState;
 use std::{
     ops::{RangeBounds, RangeInclusive},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use tracing::trace;
@@ -69,7 +69,7 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     /// The node storage handler.
     storage: Arc<N::Storage>,
     /// Optional external trie cache
-    trie_cache: Option<Arc<dyn ExternalTrieStore>>,
+    trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
 }
 
 impl<N: NodeTypes> ProviderFactory<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>> {
@@ -109,7 +109,7 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     }
 
     /// Sets the external trie cache for an existing [`ProviderFactory`].
-    pub fn with_trie_cache(mut self, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn with_trie_cache(mut self, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         self.trie_cache = Some(cache);
         self
     }

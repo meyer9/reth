@@ -89,7 +89,7 @@ use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, error, info, warn};
 use reth_transaction_pool::TransactionPool;
-use std::{sync::Arc, thread::available_parallelism};
+use std::{sync::{Arc, Mutex}, thread::available_parallelism};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     oneshot, watch,
@@ -484,7 +484,7 @@ where
             self.chain_spec(),
             StaticFileProvider::read_write(self.data_dir().static_files())?,
         )
-        .with_trie_cache(Arc::new(DynamoDBExternalTrieStoreHandle::new(tx)))
+        .with_trie_cache(Arc::new(Mutex::new(DynamoDBExternalTrieStoreHandle::new(tx))))
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 

@@ -1,9 +1,10 @@
-use crate::{hashed_cursor::HashedCursorFactory, BranchNodeCompact, Nibbles};
+use crate::{hashed_cursor::{HashedCursor, HashedCursorFactory}, BranchNodeCompact, Nibbles};
 use alloy_primitives::B256;
+use alloy_trie::TrieAccount;
 use reth_storage_errors::{db::DatabaseError, provider::ProviderError};
-use reth_trie_common::BranchNode;
+use reth_trie_common::{BranchNode, TrieNode};
 use tracing::{info, warn};
-use std::{collections::HashMap, fmt::Debug, sync::{Arc}};
+use std::{cmp::min, collections::HashMap, fmt::Debug, ops::{Deref, DerefMut}, sync::{Arc, Mutex, RwLock}};
 // Add DynamoDB imports
 use aws_sdk_dynamodb::{
     error::DisplayErrorContext,
@@ -14,6 +15,9 @@ use aws_config::Region;
 use alloy_rlp::{Decodable, Encodable};
 use async_trait::async_trait;
 use std::sync::mpsc;
+use schnellru::{ByLength, LruMap};
+use reth_primitives_traits::Account;
+
 
 use super::{TrieCursor, TrieCursorFactory};
 
@@ -39,7 +43,7 @@ pub struct Message {
     pub key: Nibbles,
     pub hashed_account: Option<B256>,
     // TODO: allow non-branches
-    pub response: mpsc::Sender<Result<Option<BranchNodeCompact>, ProviderError>>,
+    pub response: mpsc::Sender<Result<Option<TrieNode>, ProviderError>>,
 }
 
 impl DynamoDBExternalTrieStore {
@@ -85,7 +89,7 @@ impl DynamoDBExternalTrieStore {
     }
 
     /// Convert DynamoDB item to BranchNodeCompact
-    fn item_to_node(&self, item: &HashMap<String, AttributeValue>) -> Result<BranchNodeCompact, ProviderError> {
+    fn item_to_node(&self, item: &HashMap<String, AttributeValue>) -> Result<TrieNode, ProviderError> {
         let node_data = item
             .get("data")
             .and_then(|v| v.as_b().ok())
@@ -104,24 +108,16 @@ impl DynamoDBExternalTrieStore {
             return Err(ProviderError::Database(DatabaseError::Other("Invalid hash length".to_string())));
         }
 
-        let hash = B256::from_slice(hash.as_ref());
-
         let mut node_data = node_data.as_ref(); 
-        let branch_node = BranchNode::decode(&mut node_data)?;
+        let node = TrieNode::decode(&mut node_data).map_err(|e| {
+            ProviderError::Database(DatabaseError::Other(format!("Failed to decode trie node: {e}")))
+        })?;
 
-        let branch_node_compact = BranchNodeCompact::new(
-            branch_node.state_mask,
-            branch_node.state_mask,
-            branch_node.state_mask,
-            branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
-            Some(hash),
-        );
-
-        Ok(branch_node_compact)
+        Ok(node)
     }
 
 
-    async fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+    async fn get_trie_node(&self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError> {
         let mut key_map = HashMap::new();
 
         key_map.insert("full_path".to_string(), AttributeValue::B(self.path_to_key(&key).into()));
@@ -168,12 +164,14 @@ impl DynamoDBExternalTrieStore {
 }
 
 impl ExternalTrieStore for DynamoDBExternalTrieStoreHandle {
-    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+    fn get_trie_node(&mut self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError> {
         info!("Fetching trie node from cache for key: {:?}", key);
         let (tx, rx) = mpsc::channel();
         let message = Message { key: key.clone(), hashed_account: None, response: tx };
         self.sender.send(message).unwrap();
-        rx.recv().unwrap()
+        let node = rx.recv().unwrap();
+        info!("Got trie node from cache for key: {:?}", key);
+        return node;
     }
 }
 
@@ -190,29 +188,61 @@ impl InMemoryExternalTrieStore {
 }
 
 impl ExternalTrieStore for InMemoryExternalTrieStore {
-    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError> {
+    fn get_trie_node(&mut self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError> {
         info!("Fetching trie node from cache for key: {:?}", key);
         Ok(None)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedExternalTrieStore {
+    inner: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: Arc<Mutex<LruMap<Nibbles, TrieNode>>>,
+}
+
+impl CachedExternalTrieStore {
+    pub fn new(inner: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+        Self { inner, cache: Arc::new(Mutex::new(LruMap::new(ByLength::new(100000)))) }
+    }
+}
+
+impl ExternalTrieStore for CachedExternalTrieStore {
+    fn get_trie_node(&mut self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError> {
+        let cloned_node = {
+            let mut cache = self.cache.lock().unwrap();
+            cache.get(key).cloned()
+        }.clone();
+        if let Some(node) = cloned_node {
+            Ok(Some(node))
+        } else {
+            let node = self.inner.lock().unwrap().get_trie_node(key)?.clone();
+            if let Some(trie_node) = node {
+                let node_clone = trie_node.clone();
+                self.cache.lock().unwrap().insert(key.clone(), node_clone.clone());
+                return Ok(Some(node_clone));
+            }
+            Ok(None)
+        }
     }
 }
 
 /// Trait for external key-value storage of trie nodes.
 pub trait ExternalTrieStore: Send + Sync + Debug {
     /// Get a trie node by its key.
-    fn get_trie_node(&self, key: &Nibbles) -> Result<Option<BranchNodeCompact>, ProviderError>;
+    fn get_trie_node(&mut self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError>;
 }
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
 #[derive(Debug)]
 pub struct CachedTrieCursor<C> {
     inner: C,
-    cache: Arc<dyn ExternalTrieStore>,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
     current: Option<(Nibbles, BranchNodeCompact)>,
 }
 
 impl<C> CachedTrieCursor<C> {
     /// Create a new cached trie cursor.
-    pub fn new(inner: C, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn new(inner: C, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         Self { inner, cache, current: None }
     }
 }
@@ -222,17 +252,29 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        info!("seeking exact in cache for key: {:?}", key);
 
             // First try the cache
-            if let Some(node) = self.cache.get_trie_node(&key).map_err(|e| {
+            if let Some(node) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
                 DatabaseError::Other(format!("Cache error: {e}"))
             })? {
-                return Ok(Some((key, node)));
+                if let TrieNode::Branch(branch_node) = node {
+                    let branch_node_compact = BranchNodeCompact::new(
+                        branch_node.state_mask,
+                        branch_node.state_mask,
+                        branch_node.state_mask,
+                        branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
+                        None,
+                    );
+                    self.current = Some((key.clone(), branch_node_compact.clone()));
+                    return Ok(Some((key, branch_node_compact)));
+                } else {
+                    return Ok(None);
+                }
             }
 
             // Fall back to inner cursor
             self.current = None;
-            warn!("seeking exact");
             let result = self.inner.seek_exact(key)?;
 
             Ok(result)
@@ -242,16 +284,28 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        info!("seeking in cache for key: {:?}", key);
         // First try the cache
-        if let Some(node) = self.cache.get_trie_node(&key).map_err(|e| {
+        if let Some(node) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
             DatabaseError::Other(format!("Cache error: {e}"))
         })? {
-            return Ok(Some((key, node)));
+            if let TrieNode::Branch(branch_node) = node {
+                let branch_node_compact = BranchNodeCompact::new(
+                    branch_node.state_mask,
+                    branch_node.state_mask,
+                    branch_node.state_mask,
+                    branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
+                    None,
+                );
+                self.current = Some((key.clone(), branch_node_compact.clone()));
+                return Ok(Some((key, branch_node_compact)));
+            } else {
+                return Ok(None);
+            }
         }
 
         // Fall back to inner cursor
         self.current = None;
-        warn!("seeking");
         let result = self.inner.seek(key)?;
 
         Ok(result)
@@ -272,16 +326,17 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
     }
 }
 
+
 /// Cached trie cursor factory that wraps cursors with caching.
 #[derive(Debug, Clone)]
 pub struct CachedTrieCursorFactory<F> {
     inner: F,
-    cache: Arc<dyn ExternalTrieStore>,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
 }
 
 impl<F> CachedTrieCursorFactory<F> {
     /// Create a new cached trie cursor factory.
-    pub fn new(inner: F, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         Self { inner, cache }
     }
 }
@@ -291,6 +346,7 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
     type StorageTrieCursor = CachedTrieCursor<F::StorageTrieCursor>;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor, DatabaseError> {
+        info!("creating account trie cursor with cache");
         let inner = self.inner.account_trie_cursor()?;
         Ok(CachedTrieCursor::new(inner, self.cache.clone()))
     }
@@ -299,10 +355,193 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor, DatabaseError> {
+        info!("creating storage trie cursor with cache");
         let inner = self.inner.storage_trie_cursor(hashed_address)?;
         Ok(CachedTrieCursor::new(inner, self.cache.clone()))
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct CachedHashedTrieCursor<F> {
+    inner: F,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+
+    current_key_parent_path: Option<Nibbles>,
+    current_key: Option<B256>,
+}
+
+impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
+    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+        Self { inner, cache, current_key: None, current_key_parent_path: None }
+    }
+
+
+    fn traverse_tree(&mut self, key: B256) -> Result<Option<(B256, Account)>, DatabaseError> {
+        let mut parent_key = Nibbles::new();
+        let mut current_key = Nibbles::new();
+        let mut current = self.cache.lock().unwrap().get_trie_node(&current_key).map_err(|e| {
+            DatabaseError::Other(format!("Cache error: {e}"))
+        })?.expect("root hash not found").clone();
+        let mut nibbles = Nibbles::unpack(key);
+        let mut nibbles_iter = nibbles.to_vec().into_iter();
+
+        loop {
+            info!("current key: {:?}", current_key);
+            if let TrieNode::Branch(branch_node) = current {
+                let child_nibble = nibbles_iter.next().unwrap();
+                info!("child nibble: {:?}, branch node: {:?}", child_nibble, branch_node.state_mask);
+
+                // first bit before or equal to child nibble
+                let next_branch = (0..=child_nibble).rev().find(|&i| branch_node.state_mask.is_bit_set(i)).unwrap_or(branch_node.state_mask.first_set_bit_index().expect("no children"));
+                parent_key = current_key.clone();
+                current_key.push(next_branch);
+
+                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+            } else if let TrieNode::Extension(extension_node) = current {
+                parent_key = current_key.clone();
+                // the parent node is the first child at or before key, so we should follow the extension no matter what
+                current_key.extend(&extension_node.key);
+                // move iterator forward and check 
+                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+            } else if let TrieNode::Leaf(leaf_node) = current {
+                let key_nibbles = current_key.join(&leaf_node.key);
+                let full_key = B256::from_slice(&key_nibbles.pack());
+                self.current_key = Some(full_key);
+                self.current_key_parent_path = Some(parent_key);
+                let trie_account = TrieAccount::decode(&mut leaf_node.value.as_slice()).map_err(|e| {
+                    DatabaseError::Other(format!("Failed to decode trie account: {e}"))
+                })?;
+                let account = Account {
+                    nonce: trie_account.nonce,
+                    balance: trie_account.balance,
+                    bytecode_hash: Some(trie_account.code_hash),
+                };
+                return Ok(Some((full_key, account)));
+            } else {
+                return Ok(None);
+            }
+        }
+
+    }
+
+    fn get_first_leaf_after(&mut self, trie_path: &Nibbles) -> Result<Option<(B256, Account)>, DatabaseError> {
+        let mut current_key = Nibbles::new();
+        let mut current = self.cache.lock().unwrap().get_trie_node(&current_key).map_err(|e| {
+            DatabaseError::Other(format!("Cache error: {e}"))
+        })?.expect("root hash not found").clone();
+        let mut nibbles_iter = trie_path.to_vec().into_iter();
+
+        loop {
+            if let TrieNode::Branch(branch_node) = current {
+                let child_nibble = nibbles_iter.next().unwrap_or_else(|| branch_node.state_mask.first_set_bit_index().expect("no children"));
+
+                // first bit before or equal to child nibble
+                let next_branch = (0..=child_nibble).rev().find(|&i| branch_node.state_mask.is_bit_set(i)).unwrap_or(branch_node.state_mask.first_set_bit_index().expect("no children"));
+                current_key.push(next_branch);
+                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+            } else if let TrieNode::Extension(extension_node) = current {
+                current_key.extend(&extension_node.key);
+                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+            } else if let TrieNode::Leaf(leaf_node) = current {
+                let key_nibbles = current_key.join(&leaf_node.key);
+                let full_key = B256::from_slice(&key_nibbles.pack());
+                let trie_account = TrieAccount::decode(&mut leaf_node.value.as_slice()).map_err(|e| {
+                    DatabaseError::Other(format!("Failed to decode trie account: {e}"))
+                })?;
+                let account = Account {
+                    nonce: trie_account.nonce,
+                    balance: trie_account.balance,
+                    bytecode_hash: Some(trie_account.code_hash),
+                };
+                return Ok(Some((full_key, account)));
+            }
+        }
+    }
+    
+    fn next_child(&mut self) -> Result<Option<(B256, Account)>, DatabaseError> {
+        let Some((mut current_key_parent_path, current_key)) = self.current_key_parent_path.zip(self.current_key) else {
+            return Ok(None);
+        };
+
+        let current_key = Nibbles::unpack(current_key);
+        info!("finding next child after key: {:?}", current_key);
+
+        while current_key_parent_path.len() > 0 {
+            info!("current key parent path: {:?}", current_key_parent_path);
+            // get parent
+            let parent_node = self.cache.lock().unwrap().get_trie_node(&current_key_parent_path).map_err(|e| {
+                DatabaseError::Other(format!("Cache error: {e}"))
+            })?.expect("parent not found").clone();
+            if let TrieNode::Branch(branch_node) = parent_node {
+                let child_nibble = current_key.get(current_key_parent_path.len()).expect("key is not long enough");
+                // check if there is another child after this one, otherwise go up one level (remove last nibble)
+                for i in (child_nibble+1)..15 {
+                    info!("checking child nibble: {:?}", i);
+                    if branch_node.state_mask.is_bit_set(i) {
+                        info!("found child nibble: {:?}", i);
+                        let next_key = current_key_parent_path.join(&Nibbles::from_nibbles(&[i as u8]));
+                        return self.get_first_leaf_after(&next_key);
+                    }
+                }
+                // no more children, go up one level
+                current_key_parent_path.pop();
+            } else if let TrieNode::Extension(extension_node) = parent_node {
+                current_key_parent_path.slice(0..current_key_parent_path.len() - extension_node.key.len());
+            } else if let TrieNode::Leaf(leaf_node) = parent_node {
+                panic!("leaf node found in parent");
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+impl<F: HashedCursor<Value = Account>> HashedCursor for CachedHashedTrieCursor<F> {
+    type Value = F::Value;
+
+    fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
+        info!("seeking in hashed cache for key: {:?}", key);
+        return self.traverse_tree(key);
+    }
+
+    fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
+        return self.next_child();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedHashedCursorFactory<F> {
+    inner: F,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+}
+
+impl<F> CachedHashedCursorFactory<F> {
+    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+        Self { inner, cache }
+    }
+}
+
+impl<F: HashedCursorFactory> HashedCursorFactory for CachedHashedCursorFactory<F> {
+    type AccountCursor = CachedHashedTrieCursor<F::AccountCursor>;
+    type StorageCursor = F::StorageCursor;
+
+    fn hashed_account_cursor(&self) -> Result<Self::AccountCursor, DatabaseError> {
+        info!("creating account cursor with cache");
+        let inner = self.inner.hashed_account_cursor()?;
+        Ok(CachedHashedTrieCursor::new(inner, self.cache.clone()))
+    }
+
+    fn hashed_storage_cursor(
+        &self,
+        hashed_address: B256,
+    ) -> Result<Self::StorageCursor, DatabaseError> {
+        info!("creating storage cursor with cache");
+        let inner = self.inner.hashed_storage_cursor(hashed_address)?;
+        Ok(inner)
+    }
+}
+
+
 
 /// Cache cursor factory that wraps both trie cursor and hashed cursor factories with caching.
 ///
@@ -314,9 +553,7 @@ pub struct CacheCursorFactory<T, H> {
     /// Trie cursor factory for fetching trie nodes (branches)
     trie_cursor_factory: CachedTrieCursorFactory<T>,
     /// Hashed cursor factory for fetching account/storage key-value pairs (leaves)
-    hashed_cursor_factory: H,
-    /// External cache for trie nodes
-    cache: Arc<dyn ExternalTrieStore>,
+    hashed_cursor_factory: CachedHashedCursorFactory<H>,
 }
 
 impl<T, H> CacheCursorFactory<T, H> {
@@ -329,19 +566,18 @@ impl<T, H> CacheCursorFactory<T, H> {
     pub fn new(
         trie_cursor_factory: T,
         hashed_cursor_factory: H,
-        cache: Arc<dyn ExternalTrieStore>,
+        cache: Arc<Mutex<dyn ExternalTrieStore>>,
     ) -> Self {
         Self {
             trie_cursor_factory: CachedTrieCursorFactory::new(trie_cursor_factory, cache.clone()),
-            hashed_cursor_factory,
-            cache,
+            hashed_cursor_factory: CachedHashedCursorFactory::new(hashed_cursor_factory, cache),
         }
     }
 }
 
-impl<T: TrieCursorFactory, H> TrieCursorFactory for CacheCursorFactory<T, H> {
-    type AccountTrieCursor = <CachedTrieCursorFactory<T> as TrieCursorFactory>::AccountTrieCursor;
-    type StorageTrieCursor = <CachedTrieCursorFactory<T> as TrieCursorFactory>::StorageTrieCursor;
+impl<T: TrieCursorFactory, H: HashedCursorFactory> TrieCursorFactory for CacheCursorFactory<T, H> {
+    type AccountTrieCursor = CachedTrieCursor<T::AccountTrieCursor>;
+    type StorageTrieCursor = CachedTrieCursor<T::StorageTrieCursor>;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor, DatabaseError> {
         self.trie_cursor_factory.account_trie_cursor()
@@ -356,11 +592,10 @@ impl<T: TrieCursorFactory, H> TrieCursorFactory for CacheCursorFactory<T, H> {
 }
 
 impl<T, H: HashedCursorFactory> HashedCursorFactory for CacheCursorFactory<T, H> {
-    type AccountCursor = H::AccountCursor;
+    type AccountCursor = CachedHashedTrieCursor<H::AccountCursor>;
     type StorageCursor = H::StorageCursor;
 
     fn hashed_account_cursor(&self) -> Result<Self::AccountCursor, DatabaseError> {
-        // TODO: Add caching logic for hashed cursors
         self.hashed_cursor_factory.hashed_account_cursor()
     }
 
@@ -368,7 +603,6 @@ impl<T, H: HashedCursorFactory> HashedCursorFactory for CacheCursorFactory<T, H>
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageCursor, DatabaseError> {
-        // TODO: Add caching logic for hashed storage cursors
         self.hashed_cursor_factory.hashed_storage_cursor(hashed_address)
     }
 }

@@ -49,6 +49,7 @@ aws-sdk-dynamodb = "1.0"
 
 tokio.workspace = true
 async-trait.workspace = true
+schnellru.workspace = true
 
 [dev-dependencies]
 # reth

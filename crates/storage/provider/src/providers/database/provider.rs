@@ -75,7 +75,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
 };
 use tracing::{debug, trace, info};
 
@@ -148,7 +148,7 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     /// Node storage handler.
     storage: Arc<N::Storage>,
     /// Optional external trie cache
-    trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
+    trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
 }
 
 impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
@@ -262,7 +262,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
+        trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
     ) -> Self {
         Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
     }
@@ -411,7 +411,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
-        let trie_cache: Option<Arc<dyn ExternalTrieStore>> = self.trie_cache.clone();
+        let trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>> = self.trie_cache.clone();
 
         let mut state_provider = HistoricalStateProvider::new(self, block_number);
 
@@ -434,7 +434,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
 
         // Wrap with external cache if available
         if let Some(cache) = trie_cache {
-            let historical_cache_ref = ExternalHistoricalCache::new(state_provider, cache.clone());
+            let historical_cache_ref = ExternalHistoricalCache::new(state_provider, cache);
             Ok(Box::new(historical_cache_ref))
         } else {
             Ok(Box::new(state_provider))
@@ -566,7 +566,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        trie_cache: Option<std::sync::Arc<dyn ExternalTrieStore>>,
+        trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
     ) -> Self {
         Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
     }

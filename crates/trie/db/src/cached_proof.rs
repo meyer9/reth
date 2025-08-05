@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
 use alloy_primitives::{keccak256, map::HashMap, Address, B256};
@@ -7,7 +7,7 @@ use reth_execution_errors::StateProofError;
 use reth_trie::{
     hashed_cursor::HashedPostStateCursorFactory,
     proof::{Proof, StorageProof},
-    trie_cursor::{CacheCursorFactory, ExternalTrieStore, InMemoryTrieCursorFactory},
+    trie_cursor::{CacheCursorFactory, CachedExternalTrieStore, ExternalTrieStore, InMemoryTrieCursorFactory},
     AccountProof, HashedPostStateSorted, HashedStorage, MultiProof, MultiProofTargets,
     StorageMultiProof, TrieInput,
 };
@@ -20,7 +20,7 @@ pub trait CachedDatabaseProof<'a, TX> {
     /// Generates the state proof for target account based on [`TrieInput`].
     fn cached_overlay_account_proof(
         tx: &'a TX,
-        cache: Arc<dyn ExternalTrieStore>,
+        cache: Arc<Mutex<dyn ExternalTrieStore>>,
         input: TrieInput,
         address: Address,
         slots: &[B256],
@@ -29,7 +29,7 @@ pub trait CachedDatabaseProof<'a, TX> {
     /// Generates the state [`MultiProof`] for target hashed account and storage keys.
     fn cached_overlay_multiproof(
         tx: &'a TX,
-        cache: Arc<dyn ExternalTrieStore>,
+        cache: Arc<Mutex<dyn ExternalTrieStore>>,
         input: TrieInput,
         targets: MultiProofTargets,
     ) -> Result<MultiProof, StateProofError>;
@@ -46,13 +46,15 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
 
     fn cached_overlay_account_proof(
         tx: &'a TX,
-        cache: Arc<dyn ExternalTrieStore>,
+        cache: Arc<Mutex<dyn ExternalTrieStore>>,
         input: TrieInput,
         address: Address,
         slots: &[B256],
     ) -> Result<AccountProof, StateProofError> {
         let nodes_sorted = input.nodes.into_sorted();
         let state_sorted = input.state.into_sorted();
+
+        let cached_trie_store: Arc<Mutex<dyn ExternalTrieStore>> = Arc::new(Mutex::new(CachedExternalTrieStore::new(cache)));
 
         let cached_trie_factory = CacheCursorFactory::new(
             InMemoryTrieCursorFactory::new(
@@ -63,7 +65,7 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
                 DatabaseHashedCursorFactory::new(tx),
                 &state_sorted,
             ),
-            cache,
+            cached_trie_store,
         );
 
         Self::from_tx(tx)
@@ -75,7 +77,7 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
 
     fn cached_overlay_multiproof(
         tx: &'a TX,
-        cache: Arc<dyn ExternalTrieStore>,
+        cache: Arc<Mutex<dyn ExternalTrieStore>>,
         input: TrieInput,
         targets: MultiProofTargets,
     ) -> Result<MultiProof, StateProofError> {

@@ -10,29 +10,29 @@ use reth_storage_api::{
 };
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
-    proof::{Proof},
+    proof::Proof,
     trie_cursor::{ExternalTrieStore, TrieCursor, TrieCursorFactory},
     updates::TrieUpdates,
     AccountProof, BranchNodeCompact, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, Nibbles, StorageMultiProof, TrieInput,
+    MultiProofTargets, Nibbles, StorageMultiProof, TrieInput, TrieNode,
 };
 use reth_trie_db::{
     CachedDatabaseProof
 };
 use revm_database::BundleState;
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::{Arc, Mutex}};
 use futures::executor::block_on;
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
 #[derive(Debug)]
 pub struct CachedTrieCursor<C> {
     inner: C,
-    cache: Arc<dyn ExternalTrieStore>,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
 }
 
 impl<C> CachedTrieCursor<C> {
     /// Create a new cached trie cursor.
-    pub fn new(inner: C, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn new(inner: C, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         Self { inner, cache }
     }
 }
@@ -43,10 +43,18 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
         // First try the cache
-        if let Some(node) = self.cache.get_trie_node(&key).map_err(|e| {
+        if let Some(TrieNode::Branch(branch_node)) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
             reth_storage_errors::db::DatabaseError::Other(format!("Cache error: {e}"))
         })? {
-            return Ok(Some((key, node)));
+
+        let branch_node_compact = BranchNodeCompact::new(
+            branch_node.state_mask,
+            branch_node.state_mask,
+            branch_node.state_mask,
+            branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
+            None,
+        );
+            return Ok(Some((key, branch_node_compact)));
         }
 
         // Fall back to inner cursor
@@ -81,12 +89,12 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
 #[derive(Debug)]
 pub struct CachedTrieCursorFactory<F> {
     inner: F,
-    cache: Arc<dyn ExternalTrieStore>,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
 }
 
 impl<F> CachedTrieCursorFactory<F> {
     /// Create a new cached trie cursor factory.
-    pub fn new(inner: F, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         Self { inner, cache }
     }
 }
@@ -111,12 +119,12 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
 
 pub struct ExternalHistoricalCacheRef<'a, Provider> {
     provider: HistoricalStateProviderRef<'a, Provider>,
-    cache: Arc<dyn ExternalTrieStore>,
+    cache: Arc<Mutex<dyn ExternalTrieStore>>,
 }
 
 impl<'a, Provider> ExternalHistoricalCacheRef<'a, Provider> {
     /// Create a new reference to the external historical cache.
-    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: Arc<dyn ExternalTrieStore>) -> Self {
+    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
         Self { provider, cache }
     }
 }
@@ -132,14 +140,14 @@ pub struct ExternalHistoricalCache<Provider> {
     /// Inner historical state provider
     inner: HistoricalStateProvider<Provider>,
     /// External trie store for caching trie nodes
-    cache: Arc<dyn ExternalTrieStore + 'static>,
+    cache: Arc<Mutex<dyn ExternalTrieStore + 'static>>,
 }
 
 impl<Provider: BlockNumReader + DBProvider + StateCommitmentProvider> ExternalHistoricalCache<Provider> {
     /// Create a new external historical cache wrapper.
     pub fn new(
         inner: HistoricalStateProvider<Provider>,
-        cache: Arc<dyn ExternalTrieStore + 'static>,
+        cache: Arc<Mutex<dyn ExternalTrieStore + 'static>>,
     ) -> Self {
         Self { inner, cache }
     }
