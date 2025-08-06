@@ -1,6 +1,6 @@
 use crate::{hashed_cursor::{HashedCursor, HashedCursorFactory}, BranchNodeCompact, Nibbles};
 use alloy_primitives::B256;
-use alloy_trie::TrieAccount;
+use alloy_trie::{TrieAccount, TrieMask, KECCAK_EMPTY};
 use reth_storage_errors::{db::DatabaseError, provider::ProviderError};
 use reth_trie_common::{BranchNode, TrieNode};
 use tracing::{info, warn};
@@ -254,15 +254,49 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         info!("seeking exact in cache for key: {:?}", key);
 
+            let parent_node = {
+                self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
+                    DatabaseError::Other(format!("Cache error: {e}"))
+                })
+            }.clone()?;
+
             // First try the cache
-            if let Some(node) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
-                DatabaseError::Other(format!("Cache error: {e}"))
-            })? {
+            if let Some(node) = parent_node {
                 if let TrieNode::Branch(branch_node) = node {
+                    // Calculate tree_mask: set bit only for children that are branch/extension nodes
+                    let mut tree_mask = TrieMask::default();
+                    let mut child_keys = Vec::new();
+                    
+                    // Collect all child keys that exist
+                    for i in 0..16u8 {
+                        if branch_node.state_mask.is_bit_set(i) {
+                            let mut child_key = key.clone();
+                            child_key.push(i);
+                            child_keys.push((i, child_key));
+                        }
+                    }
+                    
+                    // Check child node types in parallel (conceptually - using batch lookup)
+                    let cache = self.cache.clone();
+                    for (nibble, child_key) in child_keys {
+                        // TODO: error handle
+                        if let Ok(Some(child_node)) = cache.lock().unwrap().get_trie_node(&child_key).clone() {
+                            match child_node {
+                                TrieNode::Branch(_) | TrieNode::Extension(_) => {
+                                    // Child is an intermediate node - set tree_mask bit
+                                    tree_mask.set_bit(nibble);
+                                }
+                                TrieNode::Leaf(_) | TrieNode::EmptyRoot => {
+                                    // Child is a leaf - don't set tree_mask bit
+                                }
+                            }
+                        }
+                    }
+                    
                     let branch_node_compact = BranchNodeCompact::new(
                         branch_node.state_mask,
-                        branch_node.state_mask,
-                        branch_node.state_mask,
+                        tree_mask, // Only set for children that are branch/extension nodes
+                        branch_node.state_mask, // hash_mask: all children have hashes available
                         branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
                         None,
                     );
@@ -285,15 +319,49 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         info!("seeking in cache for key: {:?}", key);
+
+        let parent_node = {
+            self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
+                DatabaseError::Other(format!("Cache error: {e}"))
+            })
+        }.clone()?;
+
         // First try the cache
-        if let Some(node) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
-            DatabaseError::Other(format!("Cache error: {e}"))
-        })? {
+        if let Some(node) = parent_node {
             if let TrieNode::Branch(branch_node) = node {
+                // Calculate tree_mask: set bit only for children that are branch/extension nodes
+                let mut tree_mask = TrieMask::default();
+                let mut child_keys = Vec::new();
+                
+                // Collect all child keys that exist
+                for i in 0..16u8 {
+                    if branch_node.state_mask.is_bit_set(i) {
+                        let mut child_key = key.clone();
+                        child_key.push(i);
+                        child_keys.push((i, child_key));
+                    }
+                }
+                
+                // Check child node types in parallel (conceptually - using batch lookup)
+                let cache = self.cache.clone();
+                for (nibble, child_key) in child_keys {
+                    if let Ok(Some(child_node)) = cache.lock().unwrap().get_trie_node(&child_key).clone() {
+                        match child_node {
+                            TrieNode::Branch(_) | TrieNode::Extension(_) => {
+                                // Child is an intermediate node - set tree_mask bit
+                                tree_mask.set_bit(nibble);
+                            }
+                            TrieNode::Leaf(_) | TrieNode::EmptyRoot => {
+                                // Child is a leaf - don't set tree_mask bit
+                            }
+                        }
+                    }
+                }
+                
                 let branch_node_compact = BranchNodeCompact::new(
                     branch_node.state_mask,
-                    branch_node.state_mask,
-                    branch_node.state_mask,
+                    tree_mask, // Only set for children that are branch/extension nodes
+                    branch_node.state_mask, // hash_mask: all children have hashes available
                     branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
                     None,
                 );
@@ -391,18 +459,30 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
                 let child_nibble = nibbles_iter.next().unwrap();
                 info!("child nibble: {:?}, branch node: {:?}", child_nibble, branch_node.state_mask);
 
-                // first bit before or equal to child nibble
-                let next_branch = (0..=child_nibble).rev().find(|&i| branch_node.state_mask.is_bit_set(i)).unwrap_or(branch_node.state_mask.first_set_bit_index().expect("no children"));
+                // first bit after or equal to nibble, otherwise, go up one level
+                let next_branch = (child_nibble..=15).find(|&i| branch_node.state_mask.is_bit_set(i));
                 parent_key = current_key.clone();
-                current_key.push(next_branch);
+                current_key.push(next_branch.unwrap_or(15));
 
-                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+                // if there is a branch to traverse, follow it
+                if let Some(next_branch) = next_branch {
+                    current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+                } else {
+                    // no branch to traverse >= key, so find the first child after the current key
+                    return self.move_to_first_leaf_after(&current_key);
+                }
             } else if let TrieNode::Extension(extension_node) = current {
                 parent_key = current_key.clone();
-                // the parent node is the first child at or before key, so we should follow the extension no matter what
                 current_key.extend(&extension_node.key);
-                // move iterator forward and check 
-                current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+                let key_nibbles = Nibbles::unpack(key);
+
+                if key_nibbles.starts_with(&current_key) {
+                    // move iterator forward and check 
+                    current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
+                } else {
+                    // no branch to traverse >= key, so find the first child after the current key
+                    return self.move_to_first_leaf_after(&current_key);
+                }
             } else if let TrieNode::Leaf(leaf_node) = current {
                 let key_nibbles = current_key.join(&leaf_node.key);
                 let full_key = B256::from_slice(&key_nibbles.pack());
@@ -413,8 +493,8 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
                 })?;
                 let account = Account {
                     nonce: trie_account.nonce,
-                    balance: trie_account.balance,
-                    bytecode_hash: Some(trie_account.code_hash),
+                    balance: trie_account.balance,  
+                    bytecode_hash: if trie_account.code_hash == KECCAK_EMPTY { None } else { Some(trie_account.code_hash) },
                 };
                 return Ok(Some((full_key, account)));
             } else {
@@ -424,7 +504,8 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
 
     }
 
-    fn get_first_leaf_after(&mut self, trie_path: &Nibbles) -> Result<Option<(B256, Account)>, DatabaseError> {
+    fn move_to_first_leaf_after(&mut self, trie_path: &Nibbles) -> Result<Option<(B256, Account)>, DatabaseError> {
+        info!("finding first leaf after trie path: {:?}", trie_path);
         let mut current_key = Nibbles::new();
         let mut current = self.cache.lock().unwrap().get_trie_node(&current_key).map_err(|e| {
             DatabaseError::Other(format!("Cache error: {e}"))
@@ -432,7 +513,11 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
         let mut nibbles_iter = trie_path.to_vec().into_iter();
 
         loop {
+            info!("current key: {:?}", current_key);
             if let TrieNode::Branch(branch_node) = current {
+                info!("found branch node: {:?}", branch_node.state_mask);
+                self.current_key_parent_path = Some(current_key.clone());
+
                 let child_nibble = nibbles_iter.next().unwrap_or_else(|| branch_node.state_mask.first_set_bit_index().expect("no children"));
 
                 // first bit before or equal to child nibble
@@ -440,9 +525,18 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
                 current_key.push(next_branch);
                 current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
             } else if let TrieNode::Extension(extension_node) = current {
+                info!("found extension node: {:?}", extension_node.key);
+                self.current_key_parent_path = Some(current_key.clone());
+
+                // consume the extension key
+                for _ in 0..extension_node.key.len() {
+                    nibbles_iter.next();
+                }
+
                 current_key.extend(&extension_node.key);
                 current = self.cache.lock().unwrap().get_trie_node(&current_key).ok().flatten().expect("child not found").clone();
             } else if let TrieNode::Leaf(leaf_node) = current {
+                info!("found leaf node: {:?}", leaf_node.key);
                 let key_nibbles = current_key.join(&leaf_node.key);
                 let full_key = B256::from_slice(&key_nibbles.pack());
                 let trie_account = TrieAccount::decode(&mut leaf_node.value.as_slice()).map_err(|e| {
@@ -451,8 +545,9 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
                 let account = Account {
                     nonce: trie_account.nonce,
                     balance: trie_account.balance,
-                    bytecode_hash: Some(trie_account.code_hash),
+                    bytecode_hash: if trie_account.code_hash == KECCAK_EMPTY { None } else { Some(trie_account.code_hash) },
                 };
+                self.current_key = Some(full_key);
                 return Ok(Some((full_key, account)));
             }
         }
@@ -469,24 +564,31 @@ impl<F: HashedCursor<Value = Account>> CachedHashedTrieCursor<F> {
         while current_key_parent_path.len() > 0 {
             info!("current key parent path: {:?}", current_key_parent_path);
             // get parent
-            let parent_node = self.cache.lock().unwrap().get_trie_node(&current_key_parent_path).map_err(|e| {
+            let Some(parent_node) = self.cache.lock().unwrap().get_trie_node(&current_key_parent_path).map_err(|e| {
                 DatabaseError::Other(format!("Cache error: {e}"))
-            })?.expect("parent not found").clone();
+            })?.clone() else {
+                current_key_parent_path.pop();
+                continue;
+            };
             if let TrieNode::Branch(branch_node) = parent_node {
                 let child_nibble = current_key.get(current_key_parent_path.len()).expect("key is not long enough");
                 // check if there is another child after this one, otherwise go up one level (remove last nibble)
-                for i in (child_nibble+1)..15 {
-                    info!("checking child nibble: {:?}", i);
+                for i in (child_nibble+1)..=15 {
+                    info!("checking child nibble: {:?}, branch node: {:?}", i, branch_node.state_mask);
                     if branch_node.state_mask.is_bit_set(i) {
                         info!("found child nibble: {:?}", i);
                         let next_key = current_key_parent_path.join(&Nibbles::from_nibbles(&[i as u8]));
-                        return self.get_first_leaf_after(&next_key);
+
+                        return self.move_to_first_leaf_after(&next_key);
                     }
                 }
+                info!("got branch node, going up one level");
                 // no more children, go up one level
                 current_key_parent_path.pop();
             } else if let TrieNode::Extension(extension_node) = parent_node {
-                current_key_parent_path.slice(0..current_key_parent_path.len() - extension_node.key.len());
+                info!("got extension node, going up one level");
+                // no more children, go up one level
+                current_key_parent_path.pop();
             } else if let TrieNode::Leaf(leaf_node) = parent_node {
                 panic!("leaf node found in parent");
             }
@@ -501,11 +603,24 @@ impl<F: HashedCursor<Value = Account>> HashedCursor for CachedHashedTrieCursor<F
 
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         info!("seeking in hashed cache for key: {:?}", key);
-        return self.traverse_tree(key);
+        // shadow mode, check that result matches inner cursor
+        let result = self.traverse_tree(key);
+        let inner_result = self.inner.seek(key);
+        if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
+            info!("result: {:?}", result.as_ref().unwrap());
+            info!("inner result: {:?}", inner_result.as_ref().unwrap());
+        }
+        inner_result
     }
 
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
-        return self.next_child();
+        let result = self.next_child();
+        let inner_result = self.inner.next();
+        if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
+            info!("result: {:?}", result.as_ref().unwrap());
+            info!("inner result: {:?}", inner_result.as_ref().unwrap());
+        }
+        inner_result
     }
 }
 
