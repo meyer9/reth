@@ -43,7 +43,7 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
         // First try the cache
-        if let Some(TrieNode::Branch(branch_node)) = self.cache.lock().unwrap().get_trie_node(&key).map_err(|e| {
+        if let Some(TrieNode::Branch(branch_node)) = self.cache.lock().unwrap().get_trie_node(&key, None).map_err(|e| {
             reth_storage_errors::db::DatabaseError::Other(format!("Cache error: {e}"))
         })? {
 
