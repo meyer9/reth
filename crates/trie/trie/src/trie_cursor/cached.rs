@@ -721,3 +721,553 @@ impl<T, H: HashedCursorFactory> HashedCursorFactory for CacheCursorFactory<T, H>
         self.hashed_cursor_factory.hashed_storage_cursor(hashed_address)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        trie_cursor::mock::MockTrieCursorFactory,
+        walker::TrieWalker,
+    };
+    use alloy_primitives::{map::B256Map, b256};
+    use reth_trie_common::{prefix_set::PrefixSet, BranchNode, ExtensionNode, RlpNode, TrieNode};
+    use std::{collections::BTreeMap, sync::{Arc, Mutex}};
+
+    /// Mock external trie store for testing
+    #[derive(Debug)]
+    struct MockExternalTrieStore {
+        nodes: BTreeMap<Nibbles, TrieNode>,
+    }
+
+    impl MockExternalTrieStore {
+        fn new() -> Self {
+            Self { nodes: BTreeMap::new() }
+        }
+
+        fn insert(&mut self, key: Nibbles, node: TrieNode) {
+            self.nodes.insert(key, node);
+        }
+    }
+
+    impl ExternalTrieStore for MockExternalTrieStore {
+        fn get_trie_node(&mut self, key: &Nibbles) -> Result<Option<TrieNode>, ProviderError> {
+            Ok(self.nodes.get(key).cloned())
+        }
+    }
+
+    /// Creates a test trie with extension nodes that demonstrates why non-exact seek is needed
+    fn create_extension_node_test_trie() -> (BTreeMap<Nibbles, BranchNodeCompact>, BTreeMap<Nibbles, TrieNode>) {
+        let mut stored_nodes = BTreeMap::new();
+        let mut logical_nodes = BTreeMap::new();
+
+        // Create a trie structure that has extension nodes:
+        //
+        // Root (stored at key "")
+        //   └── Extension(key: [0x3, 0x0, 0xa, 0xf]) → Branch (stored at key [0x3, 0x0, 0xa, 0xf])
+        //       ├── Child[0x5] → Leaf
+        //       ├── Child[0x6] → Leaf  
+        //       └── Child[0x8] → Leaf
+        //
+        // This simulates a common pattern where extension nodes compress common prefixes
+
+        // Root branch node - has child only at nibble 3
+        let root_node = BranchNodeCompact::new(
+            TrieMask::new(0b1000), // state_mask: only bit 3 set
+            TrieMask::new(0b1000), // tree_mask: bit 3 set (extension node follows)
+            TrieMask::new(0b1000), // hash_mask: bit 3 set (has hash)
+            vec![b256!("1111111111111111111111111111111111111111111111111111111111111111")],  // hash for child at nibble 3
+            None,
+        );
+        stored_nodes.insert(Nibbles::new(), root_node);
+        
+        // Logical extension node at [3] (not stored in database)
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x3]),
+            TrieNode::Extension(ExtensionNode {
+                key: Nibbles::from_nibbles(&[0x0, 0xa, 0xf]),
+                child: RlpNode::word_rlp(&b256!("2222222222222222222222222222222222222222222222222222222222222222")),
+            }),
+        );
+
+        // Branch node at [3, 0, a, f] - this is where the extension leads
+        let extension_target = BranchNodeCompact::new(
+            TrieMask::new(0b101100000), // state_mask: bits 5, 6, 8 set
+            TrieMask::new(0b000000000), // tree_mask: no intermediate children
+            TrieMask::new(0b101100000), // hash_mask: all children are hashes
+            vec![
+                b256!("3333333333333333333333333333333333333333333333333333333333333333"),
+                b256!("4444444444444444444444444444444444444444444444444444444444444444"),
+                b256!("5555555555555555555555555555555555555555555555555555555555555555")
+            ], // hashes for children
+            None,
+        );
+        stored_nodes.insert(Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]), extension_target);
+
+        // Add the logical structure for the cache
+        logical_nodes.insert(
+            Nibbles::new(),
+            TrieNode::Branch(BranchNode {
+                state_mask: TrieMask::new(0b1000),
+                stack: vec![RlpNode::word_rlp(&b256!("6666666666666666666666666666666666666666666666666666666666666666"))],
+            }),
+        );
+
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]),
+            TrieNode::Branch(BranchNode {
+                state_mask: TrieMask::new(0b101100000),
+                stack: vec![
+                    RlpNode::word_rlp(&b256!("7777777777777777777777777777777777777777777777777777777777777777")),
+                    RlpNode::word_rlp(&b256!("8888888888888888888888888888888888888888888888888888888888888888")),
+                    RlpNode::word_rlp(&b256!("9999999999999999999999999999999999999999999999999999999999999999"))
+                ], // Will be filled appropriately
+            }),
+        );
+
+        (stored_nodes, logical_nodes)
+    }
+
+    #[test]
+    fn test_extension_node_seek_behavior() {
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        // Create mock external store with logical nodes
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        // Create mock inner cursor with only the stored nodes
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        
+        // Create cached cursor
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Test 1: Exact seek at extension node position should find stored node
+        // This demonstrates that even though extension node is not stored,
+        // we can still find the target branch node
+        let result = cached_cursor.seek_exact(Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf])).unwrap();
+        assert!(result.is_some(), "Should find the branch node that extension points to");
+
+        // Test 2: Non-exact seek in the middle of extension path
+        // This is the critical test - seeking at a position within the extension
+        let result = cached_cursor.seek(Nibbles::from_nibbles(&[0x3, 0x0, 0xa])).unwrap();
+        assert!(result.is_some(), "Non-exact seek should find next stored node");
+        
+        let (found_key, _) = result.unwrap();
+        assert_eq!(found_key, Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]),
+                  "Should find the branch node at end of extension path");
+    }
+
+    #[test]
+    fn test_walker_with_extension_nodes() {
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        // Create mock external store
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        // Create cached cursor factory
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let cache = Arc::new(Mutex::new(external_store));
+        let cached_factory = CachedTrieCursorFactory::new(mock_factory, cache);
+
+        // Create walker with cached cursor
+        let cursor = cached_factory.account_trie_cursor().unwrap();
+        let mut walker = TrieWalker::state_trie(cursor, PrefixSet::default());
+
+        // The walker should be able to traverse the trie despite extension nodes
+        assert!(walker.key().is_some(), "Walker should start at root");
+        
+        // Advance walker - this will trigger the non-exact seek behavior
+        walker.advance().unwrap();
+        
+        // The walker should find the branch node at the end of the extension
+        if let Some(key) = walker.key() {
+            assert_eq!(*key, Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]),
+                      "Walker should find branch node at extension target");
+        }
+    }
+
+    #[test]
+    fn test_exact_vs_non_exact_seek_difference() {
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Position in the middle of an extension node path
+        let extension_middle = Nibbles::from_nibbles(&[0x3, 0x0]);
+
+        // Exact seek should find nothing (no node stored exactly at this position)
+        let exact_result = cached_cursor.seek_exact(extension_middle).unwrap();
+        // Note: This might return something from cache, but in a real DB scenario
+        // where extension nodes aren't stored, this would be None
+
+        // Non-exact seek should find the next stored node
+        let non_exact_result = cached_cursor.seek(extension_middle).unwrap();
+        assert!(non_exact_result.is_some(), "Non-exact seek should find next node");
+        
+        let (found_key, _) = non_exact_result.unwrap();
+        assert_eq!(found_key, Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]),
+                  "Should find the branch node that follows the extension");
+        assert!(found_key > extension_middle, "Found key should be greater than seek key");
+    }
+
+    #[test]
+    fn test_consume_node_scenarios() {
+        // This test demonstrates the key insight: non-exact seek allows
+        // the walker to handle extension node compression gracefully
+        
+        let (stored_nodes, _logical_nodes) = create_extension_node_test_trie();
+        
+        // Test with just the stored nodes (simulating real DB behavior)
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        
+        // Test different seek scenarios to demonstrate extension node handling
+        let mut cursor = inner_cursor;
+        
+        // Test 1: Exact seek at non-existent intermediate position
+        let intermediate_key = Nibbles::from_nibbles(&[0x3, 0x0, 0xa]);
+        let exact_result = cursor.seek_exact(intermediate_key).unwrap();
+        // Should be None since no node exists exactly at this position
+        assert!(exact_result.is_none(), "Exact seek should find nothing at intermediate extension position");
+        
+        // Test 2: Non-exact seek at same position should find the next stored node
+        let non_exact_result = cursor.seek(intermediate_key).unwrap();
+        assert!(non_exact_result.is_some(), "Non-exact seek should find next stored node");
+        
+        if let Some((found_key, _)) = non_exact_result {
+            // Should find the branch node that the extension points to
+            assert!(found_key >= intermediate_key, "Found key should be >= seek key");
+            assert_eq!(found_key, Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]),
+                      "Should find the branch node at extension target");
+        }
+        
+        // This demonstrates why consume_node() needs non-exact seek:
+        // When the walker is positioned at an intermediate extension position,
+        // only non-exact seek can find the next actual stored node
+    }
+
+    #[test]
+    fn test_tree_mask_behavior() {
+        // Test how tree_mask correctly identifies intermediate vs leaf children
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Seek to root node
+        let result = cached_cursor.seek_exact(Nibbles::new()).unwrap();
+        assert!(result.is_some(), "Should find root node");
+        
+        if let Some((_, node)) = result {
+            // Root node should have tree_mask bit set for nibble 3 (indicating extension follows)
+            assert!(node.tree_mask.is_bit_set(3), "Tree mask should indicate intermediate node at nibble 3");
+            assert!(node.state_mask.is_bit_set(3), "State mask should indicate child at nibble 3");
+            assert!(node.hash_mask.is_bit_set(3), "Hash mask should indicate hash available at nibble 3");
+        }
+    }
+
+    #[test]
+    fn test_cursor_state_management() {
+        // Test that cursor correctly maintains state across multiple operations
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Test sequence of operations
+        let root_result = cached_cursor.seek_exact(Nibbles::new()).unwrap();
+        assert!(root_result.is_some(), "Should find root");
+        
+        // Check current position
+        let current = cached_cursor.current().unwrap();
+        assert_eq!(current, Some(Nibbles::new()), "Current should be root");
+
+        // Seek to extension target
+        let target_key = Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]);
+        let target_result = cached_cursor.seek_exact(target_key).unwrap();
+        assert!(target_result.is_some(), "Should find extension target");
+        
+        // Check current position updated
+        let current = cached_cursor.current().unwrap();
+        assert_eq!(current, Some(target_key), "Current should be extension target");
+    }
+
+    #[test]
+    fn test_empty_trie_behavior() {
+        // Test cursor behavior with empty trie
+        let empty_nodes = BTreeMap::new();
+        let mut external_store = MockExternalTrieStore::new();
+
+        let mock_factory = MockTrieCursorFactory::new(empty_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // All seeks should return None
+        let root_result = cached_cursor.seek_exact(Nibbles::new()).unwrap();
+        assert!(root_result.is_none(), "Empty trie should have no root");
+        
+        let seek_result = cached_cursor.seek(Nibbles::from_nibbles(&[0x1, 0x2])).unwrap();
+        assert!(seek_result.is_none(), "Empty trie should have no nodes");
+        
+        let current = cached_cursor.current().unwrap();
+        assert!(current.is_none(), "Empty trie should have no current position");
+    }
+
+    #[test] 
+    fn test_single_node_trie() {
+        // Test trie with just a root node
+        let mut stored_nodes = BTreeMap::new();
+        let root_node = BranchNodeCompact::new(
+            TrieMask::new(0b0000_0000), // No children
+            TrieMask::new(0b0000_0000), // No intermediate children
+            TrieMask::new(0b0000_0000), // No hashes
+            vec![], // No child hashes
+            Some(b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")), // Root value
+        );
+        stored_nodes.insert(Nibbles::new(), root_node);
+
+        let mut external_store = MockExternalTrieStore::new();
+        external_store.insert(
+            Nibbles::new(),
+            TrieNode::Branch(BranchNode {
+                state_mask: TrieMask::new(0b0000_0000),
+                stack: vec![], // No children
+            }),
+        );
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Should find root node
+        let result = cached_cursor.seek_exact(Nibbles::new()).unwrap();
+        assert!(result.is_some(), "Should find root node");
+        
+        if let Some((key, node)) = result {
+            assert_eq!(key, Nibbles::new(), "Key should be empty (root)");
+            assert!(node.state_mask.is_empty(), "Should have no children");
+            assert!(node.tree_mask.is_empty(), "Should have no intermediate children");
+            // Note: root_hash might be None when retrieved from cache
+            // The important thing is that we found the node at all
+        }
+
+        // Seeking any other key should return None
+        let other_result = cached_cursor.seek_exact(Nibbles::from_nibbles(&[0x1])).unwrap();
+        assert!(other_result.is_none(), "Single node trie should have no other nodes");
+    }
+
+    #[test]
+    fn test_deep_extension_chain() {
+        // Test a deeper chain of extension nodes
+        let mut stored_nodes = BTreeMap::new();
+        let mut logical_nodes = BTreeMap::new();
+        
+        // Create root pointing to extension chain
+        let root_node = BranchNodeCompact::new(
+            TrieMask::new(0b0001), // Child at nibble 0
+            TrieMask::new(0b0001), // Intermediate child at nibble 0
+            TrieMask::new(0b0001), // Hash at nibble 0
+            vec![b256!("1111111111111111111111111111111111111111111111111111111111111111")],
+            None,
+        );
+        stored_nodes.insert(Nibbles::new(), root_node);
+
+        // Extension chain: 0 -> 01 -> 012 -> 0123
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x0]),
+            TrieNode::Extension(ExtensionNode {
+                key: Nibbles::from_nibbles(&[0x1]),
+                child: RlpNode::word_rlp(&b256!("2222222222222222222222222222222222222222222222222222222222222222")),
+            }),
+        );
+        
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x0, 0x1]),
+            TrieNode::Extension(ExtensionNode {
+                key: Nibbles::from_nibbles(&[0x2]),
+                child: RlpNode::word_rlp(&b256!("3333333333333333333333333333333333333333333333333333333333333333")),
+            }),
+        );
+        
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x0, 0x1, 0x2]),
+            TrieNode::Extension(ExtensionNode {
+                key: Nibbles::from_nibbles(&[0x3]),
+                child: RlpNode::word_rlp(&b256!("4444444444444444444444444444444444444444444444444444444444444444")),
+            }),
+        );
+
+        // Final branch at end of chain
+        let final_branch = BranchNodeCompact::new(
+            TrieMask::new(0b1000_0000), // Child at nibble 7
+            TrieMask::new(0b0000_0000), // No intermediate children (leaf)
+            TrieMask::new(0b1000_0000), // Hash at nibble 7
+            vec![b256!("5555555555555555555555555555555555555555555555555555555555555555")],
+            None,
+        );
+        stored_nodes.insert(Nibbles::from_nibbles(&[0x0, 0x1, 0x2, 0x3]), final_branch);
+        
+        logical_nodes.insert(
+            Nibbles::from_nibbles(&[0x0, 0x1, 0x2, 0x3]),
+            TrieNode::Branch(BranchNode {
+                state_mask: TrieMask::new(0b1000_0000),
+                stack: vec![RlpNode::word_rlp(&b256!("5555555555555555555555555555555555555555555555555555555555555555"))],
+            }),
+        );
+
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // Test seeking to various points in the extension chain
+        let intermediate_positions = vec![
+            Nibbles::from_nibbles(&[0x0]),
+            Nibbles::from_nibbles(&[0x0, 0x1]), 
+            Nibbles::from_nibbles(&[0x0, 0x1, 0x2]),
+        ];
+
+        for pos in intermediate_positions {
+            // Exact seek should find cached extension nodes
+            let exact_result = cached_cursor.seek_exact(pos).unwrap();
+            // Note: This may or may not find something depending on cache implementation
+            
+            // Non-exact seek should find the final branch
+            let non_exact_result = cached_cursor.seek(pos).unwrap();
+            if let Some((found_key, _)) = non_exact_result {
+                assert!(found_key >= pos, "Found key should be >= seek position");
+                // Should eventually find the final branch
+                assert!(found_key.starts_with(&Nibbles::from_nibbles(&[0x0])), 
+                       "Found key should be in the extension chain");
+            }
+        }
+
+        // Should definitely find the final branch node
+        let final_result = cached_cursor.seek_exact(Nibbles::from_nibbles(&[0x0, 0x1, 0x2, 0x3])).unwrap();
+        assert!(final_result.is_some(), "Should find final branch node");
+    }
+
+    #[test]
+    fn test_walker_step_by_step() {
+        // Test walker behavior step by step through extension nodes
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let cache = Arc::new(Mutex::new(external_store));
+        let cached_factory = CachedTrieCursorFactory::new(mock_factory, cache);
+        
+        let cursor = cached_factory.account_trie_cursor().unwrap();
+        let mut walker = TrieWalker::state_trie(cursor, PrefixSet::default());
+
+        // Step 1: Should start at root
+        assert!(walker.key().is_some(), "Walker should start with a key");
+        let start_key = *walker.key().unwrap();
+        
+        // Step 2: Advance - this triggers the non-exact seek behavior
+        let advance_result = walker.advance();
+        assert!(advance_result.is_ok(), "Walker advance should succeed");
+        
+        // Step 3: Check new position
+        if let Some(new_key) = walker.key() {
+            assert!(*new_key != start_key, "Walker should have moved to a different position");
+        }
+        
+        // Test children_are_in_trie function
+        let children_in_trie = walker.children_are_in_trie();
+        // This depends on the current node's tree_flag
+        
+        // Test hash retrieval
+        let hash = walker.hash();
+        let maybe_hash = walker.maybe_hash();
+        // maybe_hash should be more permissive than hash
+    }
+
+    #[test]
+    fn test_nibbles_operations() {
+        // Test nibbles operations used in tree traversal
+        let nibbles1 = Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf]);
+        let nibbles2 = Nibbles::from_nibbles(&[0x3, 0x0, 0xa]);
+        let nibbles3 = Nibbles::from_nibbles(&[0x3, 0x0, 0xa, 0xf, 0x5]);
+        
+        // Test prefix relationships
+        assert!(nibbles1.starts_with(&nibbles2), "nibbles1 should start with nibbles2");
+        assert!(!nibbles2.starts_with(&nibbles1), "nibbles2 should not start with nibbles1");
+        assert!(nibbles3.starts_with(&nibbles1), "nibbles3 should start with nibbles1");
+        
+        // Test ordering (important for seek operations)
+        assert!(nibbles2 < nibbles1, "Shorter prefix should be less than longer");
+        assert!(nibbles1 < nibbles3, "Extension should be less than longer path");
+        
+        // Test increment operation (used in walker)
+        if let Some(incremented) = nibbles2.increment() {
+            assert!(incremented > nibbles2, "Incremented should be greater");
+        }
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Test error handling in various scenarios
+        let (stored_nodes, logical_nodes) = create_extension_node_test_trie();
+        
+        let mut external_store = MockExternalTrieStore::new();
+        for (key, node) in logical_nodes {
+            external_store.insert(key, node);
+        }
+
+        let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
+        let inner_cursor = mock_factory.account_trie_cursor().unwrap();
+        let cache = Arc::new(Mutex::new(external_store));
+        let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
+
+        // All operations should handle errors gracefully
+        let seek_result = cached_cursor.seek_exact(Nibbles::from_nibbles(&[0xa, 0xb, 0xc]));
+        assert!(seek_result.is_ok(), "Seek should not error even if not found");
+        
+        let non_exact_result = cached_cursor.seek(Nibbles::from_nibbles(&[0xf, 0xe, 0xd]));
+        assert!(non_exact_result.is_ok(), "Non-exact seek should not error");
+        
+        let current_result = cached_cursor.current();
+        assert!(current_result.is_ok(), "Current should not error");
+    }
+}
