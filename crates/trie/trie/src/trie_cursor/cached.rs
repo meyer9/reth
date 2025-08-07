@@ -259,10 +259,25 @@ impl ExternalTrieStore for InMemoryExternalTrieStore {
     }
 }
 
+/// Cache key that combines trie path with optional hashed address for storage tries
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    /// The trie path (nibbles)
+    path: Nibbles,
+    /// Optional hashed address for storage tries (None for account tries)
+    hashed_address: Option<B256>,
+}
+
+impl CacheKey {
+    fn new(path: Nibbles, hashed_address: Option<B256>) -> Self {
+        Self { path, hashed_address }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CachedExternalTrieStore {
     inner: Arc<Mutex<dyn ExternalTrieStore>>,
-    cache: Arc<Mutex<LruMap<Nibbles, TrieNode>>>,
+    cache: Arc<Mutex<LruMap<CacheKey, TrieNode>>>,
 }
 
 impl CachedExternalTrieStore {
@@ -277,21 +292,27 @@ impl ExternalTrieStore for CachedExternalTrieStore {
         key: &Nibbles,
         hashed_address: Option<B256>,
     ) -> Result<Option<TrieNode>, ProviderError> {
+        let cache_key = CacheKey::new(key.clone(), hashed_address);
+        
+        // Try to get from cache first
         let cloned_node = {
             let mut cache = self.cache.lock().unwrap();
-            cache.get(key).cloned()
-        }
-        .clone();
+            cache.get(&cache_key).cloned()
+        };
+        
         if let Some(node) = cloned_node {
             Ok(Some(node))
         } else {
-            let node = self.inner.lock().unwrap().get_trie_node(key, hashed_address)?.clone();
+            // Cache miss - fetch from inner store
+            let node = self.inner.lock().unwrap().get_trie_node(key, hashed_address)?;
             if let Some(trie_node) = node {
                 let node_clone = trie_node.clone();
-                self.cache.lock().unwrap().insert(key.clone(), node_clone.clone());
-                return Ok(Some(node_clone));
+                // Store in cache with the composite key
+                self.cache.lock().unwrap().insert(cache_key, node_clone.clone());
+                Ok(Some(node_clone))
+            } else {
+                Ok(None)
             }
-            Ok(None)
         }
     }
 }
@@ -629,6 +650,7 @@ where
                         .expect("child not found")
                         .clone();
                 } else {
+
                     // no branch to traverse >= key, so find the first child after the current key
                     return self.move_to_first_leaf_after(&current_key);
                 }
@@ -652,10 +674,57 @@ where
         trie_path: &Nibbles,
     ) -> Result<Option<(B256, V)>, DatabaseError> {
         info!("finding first leaf after trie path: {:?}", trie_path);
+        let mut current_key = trie_path.clone();
+        // if this is a leaf, find the next parent where the key is not the last child
+        let current_node = self
+            .cache
+            .lock()
+            .unwrap()
+            .get_trie_node(trie_path, self.hashed_address)
+            .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
+        if current_node.as_ref().is_some_and(|node| matches!(node, TrieNode::Leaf(_))) || current_node.is_none() {
+            info!("Found leaf node at trie path: {:?}, looking for next parent", trie_path);
+            let mut current_parent = trie_path.clone();
+            current_parent.pop();
+
+            loop {
+                info!("Checking parent node at: {:?}", current_parent);
+                let parent_node = self
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .get_trie_node(&current_parent, self.hashed_address)
+                    .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
+                if let Some(TrieNode::Branch(branch_node)) = parent_node {
+                    info!("Found branch node with state mask: {:?}", branch_node.state_mask);
+                    let Some(bit) = current_parent.pop() else {
+                        info!("Reached root node with no more parents to check");
+                        return Ok(None);
+                    };
+                    let next_bit = ((bit+1)..=15).find(|&i| branch_node.state_mask.is_bit_set(i));
+
+                    if let Some(next_bit) = next_bit {
+                        info!("Found next bit {} after current bit {}", next_bit, bit);
+                        current_parent.push(next_bit);
+                        break;
+                    } else {
+                        info!("No more bits set after {} in current branch, moving up", bit);
+                        // already popped the next bit, so try again
+                        continue;
+                    }
+                } else if let Some(TrieNode::Extension(extension_node)) = parent_node {
+                    info!("Found extension node with key: {:?}", extension_node.key);
+                    current_parent = current_parent.slice(0..current_parent.len() - extension_node.key.len());
+                } else {
+                    panic!("unexpected leaf node in parent");
+                }
+            }
+        
+            current_key = current_parent;
+            info!("Setting current key to: {:?}", current_key);
+        }
         
         // Start from the trie path and traverse down to find the first leaf
-        let mut current_key = trie_path.clone();
-        
         loop {
             let current_node = self
                 .cache
@@ -708,7 +777,7 @@ where
                 }
                 Some(TrieNode::EmptyRoot) | None => {
                     info!("reached empty node or end at {:?}", current_key);
-                    return Ok(None);
+                    
                 }
             }
         }
@@ -1975,5 +2044,57 @@ mod tests {
         
         let (key, value) = result.unwrap();
         assert_eq!(value, storage_value);
+    }
+
+    #[test]
+    fn test_cached_external_trie_store_separation() {
+        // Test that CachedExternalTrieStore properly separates account and storage caches
+        let inner_store = Arc::new(Mutex::new(MockExternalTrieStore::new()));
+        let mut cached_store = CachedExternalTrieStore::new(inner_store.clone());
+        
+        let test_path = Nibbles::from_nibbles(&[1, 2, 3]);
+        let hashed_address = b256!("1111111111111111111111111111111111111111111111111111111111111111");
+        
+        // Create different nodes for account and storage tries
+        let account_node = TrieNode::Leaf(reth_trie_common::LeafNode {
+            key: Nibbles::from_nibbles(&[4, 5]),
+            value: vec![1, 2, 3, 4], // Account data
+        });
+        
+        let storage_node = TrieNode::Leaf(reth_trie_common::LeafNode {
+            key: Nibbles::from_nibbles(&[6, 7]),
+            value: vec![5, 6, 7, 8], // Storage data
+        });
+        
+        // Add nodes to inner store
+        {
+            let mut inner = inner_store.lock().unwrap();
+            inner.insert(test_path.clone(), account_node.clone());
+        }
+        
+        // Access the same path for both account trie (hashed_address = None) and storage trie
+        let result1 = cached_store.get_trie_node(&test_path, None).unwrap();
+        assert!(result1.is_some(), "Should find account node");
+        
+        // Now add a different node for storage with the same path but different hashed_address
+        {
+            let mut inner = inner_store.lock().unwrap();
+            inner.insert(test_path.clone(), storage_node.clone());
+        }
+        
+        let result2 = cached_store.get_trie_node(&test_path, Some(hashed_address)).unwrap();
+        assert!(result2.is_some(), "Should find storage node");
+        
+        // Verify account cache still works (should return cached account node)
+        let result3 = cached_store.get_trie_node(&test_path, None).unwrap();
+        assert!(result3.is_some(), "Should still find cached account node");
+        
+        // The account result should be the originally cached node
+        if let (Some(TrieNode::Leaf(leaf1)), Some(TrieNode::Leaf(leaf3))) = 
+            (result1.as_ref(), result3.as_ref()) {
+            assert_eq!(leaf1.value, leaf3.value, "Account cache should return same node");
+        }
+        
+        println!("Cache properly separates account and storage tries");
     }
 }
