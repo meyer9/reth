@@ -49,7 +49,7 @@ pub use reth_chain_state::{
 };
 
 pub use reth_trie::trie_cursor::{
-    ExternalTrieStore, InMemoryExternalTrieStore, DynamoDBExternalTrieStore, DynamoDBExternalTrieStoreHandle
+    DynamoDBExternalTrieStore, DynamoDBExternalTrieStoreHandle, ExternalTrieStore,
 };
 
 // reexport traits to avoid breaking changes

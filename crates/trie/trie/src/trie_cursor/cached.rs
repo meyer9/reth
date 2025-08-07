@@ -685,7 +685,10 @@ where
         if current_node.as_ref().is_some_and(|node| matches!(node, TrieNode::Leaf(_))) || current_node.is_none() {
             info!("Found leaf node at trie path: {:?}, looking for next parent", trie_path);
             let mut current_parent = trie_path.clone();
-            current_parent.pop();
+            let Some(mut current_bit) = current_parent.pop() else {
+                // only case where only a single leaf node exists
+                return Ok(None);
+            };
 
             loop {
                 info!("Checking parent node at: {:?}", current_parent);
@@ -697,26 +700,29 @@ where
                     .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
                 if let Some(TrieNode::Branch(branch_node)) = parent_node {
                     info!("Found branch node with state mask: {:?}", branch_node.state_mask);
-                    let Some(bit) = current_parent.pop() else {
-                        info!("Reached root node with no more parents to check");
-                        return Ok(None);
-                    };
-                    let next_bit = ((bit+1)..=15).find(|&i| branch_node.state_mask.is_bit_set(i));
+                    let next_bit = ((current_bit+1)..=15).find(|&i| branch_node.state_mask.is_bit_set(i));
 
                     if let Some(next_bit) = next_bit {
-                        info!("Found next bit {} after current bit {}", next_bit, bit);
+                        info!("Found next bit {} after current bit {}", next_bit, current_bit);
                         current_parent.push(next_bit);
                         break;
                     } else {
-                        info!("No more bits set after {} in current branch, moving up", bit);
-                        // already popped the next bit, so try again
+                        info!("No more bits set after {} in current branch, moving up", current_bit);
+
+                        let Some(bit) = current_parent.pop() else {
+                            info!("Reached root node with no more parents to check");
+                            return Ok(None);
+                        };
+                        current_bit = bit;
                         continue;
                     }
                 } else if let Some(TrieNode::Extension(extension_node)) = parent_node {
                     info!("Found extension node with key: {:?}", extension_node.key);
                     current_parent = current_parent.slice(0..current_parent.len() - extension_node.key.len());
                 } else {
-                    panic!("unexpected leaf node in parent");
+                    if current_parent.pop().is_none() {
+                        return Ok(None);
+                    }
                 }
             }
         
@@ -855,6 +861,7 @@ where
         if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
             info!("result: {:?}", result.as_ref().unwrap());
             info!("inner result: {:?}", inner_result.as_ref().unwrap());
+            panic!("result mismatch");
         }
         result
     }
@@ -865,6 +872,7 @@ where
         if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
             info!("result: {:?}", result.as_ref().unwrap());
             info!("inner result: {:?}", inner_result.as_ref().unwrap());
+            panic!("result mismatch");
         }
         result
     }

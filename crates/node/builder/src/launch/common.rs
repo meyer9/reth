@@ -72,10 +72,9 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, StaticFileProvider},
-    BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, ProviderError,
-    ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
-    StaticFileProviderFactory, ExternalTrieStore, InMemoryExternalTrieStore, DynamoDBExternalTrieStore,
-    DynamoDBExternalTrieStoreHandle
+    BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider,
+    DynamoDBExternalTrieStore, DynamoDBExternalTrieStoreHandle, ProviderError, ProviderFactory,
+    ProviderResult, StageCheckpointReader, StateProviderFactory, StaticFileProviderFactory,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -89,7 +88,10 @@ use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, error, info, warn};
 use reth_transaction_pool::TransactionPool;
-use std::{sync::{Arc, Mutex}, thread::available_parallelism};
+use std::{
+    sync::{Arc, Mutex},
+    thread::available_parallelism,
+};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     oneshot, watch,
@@ -470,11 +472,16 @@ where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
-
         let (tx, mut rx) = std::sync::mpsc::channel();
         tokio::spawn(async move {
             let historical_cache = Arc::new(
-                DynamoDBExternalTrieStore::new("manual_base_mainnet_historical_snapshot".to_string(), Some("us-east-1".to_string()), None).await.unwrap()
+                DynamoDBExternalTrieStore::new(
+                    "manual_base_mainnet_historical_snapshot".to_string(),
+                    Some("us-east-1".to_string()),
+                    None,
+                )
+                .await
+                .unwrap(),
             );
             historical_cache.serve(&mut rx).await;
         });
@@ -895,9 +902,9 @@ where
     /// This checks for OP-Mainnet and ensures we have all the necessary data to progress (past
     /// bedrock height)
     fn ensure_chain_specific_db_checks(&self) -> ProviderResult<()> {
-        if self.chain_spec().is_optimism() &&
-            !self.is_dev() &&
-            self.chain_id() == Chain::optimism_mainnet()
+        if self.chain_spec().is_optimism()
+            && !self.is_dev()
+            && self.chain_id() == Chain::optimism_mainnet()
         {
             let latest = self.blockchain_db().last_block_number()?;
             // bedrock height
@@ -905,7 +912,7 @@ where
                 error!(
                     "Op-mainnet has been launched without importing the pre-Bedrock state. The chain can't progress without this. See also https://reth.rs/run/sync-op-mainnet.html?minimal-bootstrap-recommended"
                 );
-                return Err(ProviderError::BestBlockNotFound)
+                return Err(ProviderError::BestBlockNotFound);
             }
         }
 
@@ -1076,7 +1083,7 @@ where
         &self,
     ) -> eyre::Result<Box<dyn InvalidBlockHook<<T::Types as NodeTypes>::Primitives>>> {
         let Some(ref hook) = self.node_config().debug.invalid_block_hook else {
-            return Ok(Box::new(NoopInvalidBlockHook::default()))
+            return Ok(Box::new(NoopInvalidBlockHook::default()));
         };
         let healthy_node_rpc_client = self.get_healthy_node_client().await?;
 
