@@ -221,7 +221,7 @@ impl DynamoDBExternalTrieStore {
 
 impl ExternalTrieStore for DynamoDBExternalTrieStoreHandle {
     fn get_trie_node(
-        &mut self,
+        &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
     ) -> Result<Option<TrieNode>, ProviderError> {
@@ -235,27 +235,6 @@ impl ExternalTrieStore for DynamoDBExternalTrieStoreHandle {
         let node = rx.recv().unwrap();
         info!("Got trie node from cache for key: {:?}", key);
         return node;
-    }
-}
-
-/// Example in-memory external cache for trie nodes.
-#[derive(Debug, Clone)]
-pub struct InMemoryExternalTrieStore {}
-
-impl InMemoryExternalTrieStore {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ExternalTrieStore for InMemoryExternalTrieStore {
-    fn get_trie_node(
-        &mut self,
-        key: &Nibbles,
-        _hashed_address: Option<B256>,
-    ) -> Result<Option<TrieNode>, ProviderError> {
-        info!("Fetching trie node from cache for key: {:?}", key);
-        Ok(None)
     }
 }
 
@@ -275,20 +254,20 @@ impl CacheKey {
 }
 
 #[derive(Debug, Clone)]
-pub struct CachedExternalTrieStore {
-    inner: Arc<Mutex<dyn ExternalTrieStore>>,
+pub struct CachedExternalTrieStore<T> {
+    inner: T,
     cache: Arc<Mutex<LruMap<CacheKey, TrieNode>>>,
 }
 
-impl CachedExternalTrieStore {
-    pub fn new(inner: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+impl<T> CachedExternalTrieStore<T> {
+    pub fn new(inner: T) -> Self {
         Self { inner, cache: Arc::new(Mutex::new(LruMap::new(ByLength::new(100000)))) }
     }
 }
 
-impl ExternalTrieStore for CachedExternalTrieStore {
+impl<T: Debug + Send + Sync + ExternalTrieStore> ExternalTrieStore for CachedExternalTrieStore<T> {
     fn get_trie_node(
-        &mut self,
+        &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
     ) -> Result<Option<TrieNode>, ProviderError> {
@@ -304,7 +283,7 @@ impl ExternalTrieStore for CachedExternalTrieStore {
             Ok(Some(node))
         } else {
             // Cache miss - fetch from inner store
-            let node = self.inner.lock().unwrap().get_trie_node(key, hashed_address)?;
+            let node = self.inner.get_trie_node(key, hashed_address)?;
             if let Some(trie_node) = node {
                 let node_clone = trie_node.clone();
                 // Store in cache with the composite key
@@ -322,17 +301,36 @@ pub trait ExternalTrieStore: Send + Sync + Debug {
     /// Get a trie node by its key.
     /// For storage tries, include the hashed_address to properly encode the storage path.
     fn get_trie_node(
-        &mut self,
+        &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
     ) -> Result<Option<TrieNode>, ProviderError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalTrieStoreHandle(Arc<dyn ExternalTrieStore>);
+
+impl ExternalTrieStoreHandle {
+    pub fn new(inner: Arc<dyn ExternalTrieStore>) -> Self {
+        Self(inner)
+    }
+}
+
+impl ExternalTrieStore for ExternalTrieStoreHandle {
+    fn get_trie_node(
+        &self,
+        key: &Nibbles,
+        hashed_address: Option<B256>,
+    ) -> Result<Option<TrieNode>, ProviderError> {
+        self.0.get_trie_node(key, hashed_address)
+    }
 }
 
 /// Cached trie cursor that first checks external cache before falling back to the inner cursor.
 #[derive(Debug)]
 pub struct CachedTrieCursor<C> {
     inner: C,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: ExternalTrieStoreHandle,
     current: Option<(Nibbles, BranchNodeCompact)>,
     /// For storage tries, this contains the hashed address to properly encode cache keys
     hashed_address: Option<B256>,
@@ -340,14 +338,14 @@ pub struct CachedTrieCursor<C> {
 
 impl<C> CachedTrieCursor<C> {
     /// Create a new cached trie cursor.
-    pub fn new(inner: C, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn new(inner: C, cache: ExternalTrieStoreHandle) -> Self {
         Self { inner, cache, current: None, hashed_address: None }
     }
 
     /// Create a new cached storage trie cursor with hashed address.
     pub fn new_storage(
         inner: C,
-        cache: Arc<Mutex<dyn ExternalTrieStore>>,
+        cache: ExternalTrieStoreHandle,
         hashed_address: B256,
     ) -> Self {
         Self { inner, cache, current: None, hashed_address: Some(hashed_address) }
@@ -360,8 +358,6 @@ impl<C> CachedTrieCursor<C> {
         // Get the current node at the key
         let current_node = self
             .cache
-            .lock()
-            .unwrap()
             .get_trie_node(&key, self.hashed_address)
             .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
             
@@ -403,8 +399,6 @@ impl<C> CachedTrieCursor<C> {
             info!("find_branch_starting_from: checking node at key: {:?}", current_key);
             let current_node = self
                 .cache
-                .lock()
-                .unwrap()
                 .get_trie_node(&current_key, self.hashed_address)
                 .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
                 
@@ -452,8 +446,6 @@ impl<C> CachedTrieCursor<C> {
             // Get the parent node
             let parent_node = self
                 .cache
-                .lock()
-                .unwrap()
                 .get_trie_node(&current_key, self.hashed_address)
                 .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
                 
@@ -530,7 +522,7 @@ impl<C> CachedTrieCursor<C> {
         let cache = self.cache.clone();
         for (nibble, child_key) in child_keys {
             if let Ok(Some(child_node)) =
-                cache.lock().unwrap().get_trie_node(&child_key, self.hashed_address)
+                cache.get_trie_node(&child_key, self.hashed_address)
             {
                 match child_node {
                     TrieNode::Branch(_) => {
@@ -574,8 +566,6 @@ impl<C> CachedTrieCursor<C> {
 
         let parent_node = {
             self.cache
-                .lock()
-                .unwrap()
                 .get_trie_node(&key, self.hashed_address)
                 .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))
         }
@@ -602,7 +592,7 @@ impl<C> CachedTrieCursor<C> {
                 for (nibble, child_key) in child_keys {
                     // TODO: error handle
                     if let Ok(Some(child_node)) =
-                        cache.lock().unwrap().get_trie_node(&child_key, self.hashed_address).clone()
+                        cache.get_trie_node(&child_key, self.hashed_address)
                     {
                         match child_node {
                             TrieNode::Branch(_) | TrieNode::Extension(_) => {
@@ -686,12 +676,12 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
 #[derive(Debug, Clone)]
 pub struct CachedTrieCursorFactory<F> {
     inner: F,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: ExternalTrieStoreHandle,
 }
 
 impl<F> CachedTrieCursorFactory<F> {
     /// Create a new cached trie cursor factory.
-    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn new(inner: F, cache: ExternalTrieStoreHandle) -> Self {
         Self { inner, cache }
     }
 }
@@ -720,7 +710,7 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
 #[derive(Debug, Clone)]
 pub struct CachedHashedCursor<F, V> {
     inner: F,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: ExternalTrieStoreHandle,
     /// For storage cursors, this contains the hashed address. For account cursors, this is None.
     hashed_address: Option<B256>,
     current_key_parent_path: Option<Nibbles>,
@@ -734,7 +724,7 @@ where
     V: TrieValueDecoder,
 {
     /// Create a new account cursor (no hashed address)
-    pub fn new_account(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn new_account(inner: F, cache: ExternalTrieStoreHandle) -> Self {
         Self {
             inner,
             cache,
@@ -746,7 +736,7 @@ where
     }
 
     /// Create a new storage cursor (with hashed address)
-    pub fn new_storage(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>, hashed_address: B256) -> Self {
+    pub fn new_storage(inner: F, cache: ExternalTrieStoreHandle, hashed_address: B256) -> Self {
         Self {
             inner,
             cache,
@@ -762,8 +752,6 @@ where
         let mut current_key = Nibbles::new();
         let mut current = self
             .cache
-            .lock()
-            .unwrap()
             .get_trie_node(&current_key, self.hashed_address)
             .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?
             .expect("root hash not found")
@@ -790,8 +778,6 @@ where
                 if let Some(_next_branch) = next_branch {
                     current = self
                         .cache
-                        .lock()
-                        .unwrap()
                         .get_trie_node(&current_key, self.hashed_address)
                         .ok()
                         .flatten()
@@ -810,8 +796,6 @@ where
                     // move iterator forward and check
                     current = self
                         .cache
-                        .lock()
-                        .unwrap()
                         .get_trie_node(&current_key, self.hashed_address)
                         .ok()
                         .flatten()
@@ -846,8 +830,6 @@ where
         // if this is a leaf, find the next parent where the key is not the last child
         let current_node = self
             .cache
-            .lock()
-            .unwrap()
             .get_trie_node(trie_path, self.hashed_address)
             .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
         if current_node.as_ref().is_some_and(|node| matches!(node, TrieNode::Leaf(_))) || current_node.is_none() {
@@ -862,8 +844,6 @@ where
                 info!("Checking parent node at: {:?}", current_parent);
                 let parent_node = self
                     .cache
-                    .lock()
-                    .unwrap()
                     .get_trie_node(&current_parent, self.hashed_address)
                     .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
                 if let Some(TrieNode::Branch(branch_node)) = parent_node {
@@ -902,8 +882,6 @@ where
         loop {
             let current_node = self
                 .cache
-                .lock()
-                .unwrap()
                 .get_trie_node(&current_key, self.hashed_address)
                 .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
                 
@@ -972,8 +950,6 @@ where
             // get parent
             let Some(parent_node) = self
                 .cache
-                .lock()
-                .unwrap()
                 .get_trie_node(&current_key_parent_path, self.hashed_address)
                 .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?
                 .clone()
@@ -1061,11 +1037,11 @@ where
 #[derive(Debug, Clone)]
 pub struct CachedHashedCursorFactory<F> {
     inner: F,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: ExternalTrieStoreHandle,
 }
 
 impl<F> CachedHashedCursorFactory<F> {
-    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn new(inner: F, cache: ExternalTrieStoreHandle) -> Self {
         Self { inner, cache }
     }
 }
@@ -1113,7 +1089,7 @@ impl<T, H> CacheCursorFactory<T, H> {
     pub fn new(
         trie_cursor_factory: T,
         hashed_cursor_factory: H,
-        cache: Arc<Mutex<dyn ExternalTrieStore>>,
+        cache: ExternalTrieStoreHandle,
     ) -> Self {
         Self {
             trie_cursor_factory: CachedTrieCursorFactory::new(trie_cursor_factory, cache.clone()),
@@ -1186,7 +1162,7 @@ mod tests {
 
     impl ExternalTrieStore for MockExternalTrieStore {
         fn get_trie_node(
-            &mut self,
+            &self,
             key: &Nibbles,
             _hashed_address: Option<B256>,
         ) -> Result<Option<TrieNode>, ProviderError> {
@@ -1292,7 +1268,7 @@ mod tests {
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
 
         // Create cached cursor
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Test 1: Exact seek at extension node position should find stored node
@@ -1327,7 +1303,7 @@ mod tests {
 
         // Create cached cursor factory
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let cached_factory = CachedTrieCursorFactory::new(mock_factory, cache);
 
         // Create walker with cached cursor
@@ -1361,7 +1337,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+            let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Position in the middle of an extension node path
@@ -1439,7 +1415,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Seek to root node
@@ -1472,7 +1448,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Test sequence of operations
@@ -1501,7 +1477,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(empty_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // All seeks should return None
@@ -1539,7 +1515,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Should find root node
@@ -1633,7 +1609,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // Test seeking to various points in the extension chain
@@ -1677,7 +1653,7 @@ mod tests {
         }
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let cached_factory = CachedTrieCursorFactory::new(mock_factory, cache);
 
         let cursor = cached_factory.account_trie_cursor().unwrap();
@@ -1740,7 +1716,7 @@ mod tests {
 
         let mock_factory = MockTrieCursorFactory::new(stored_nodes, B256Map::default());
         let inner_cursor = mock_factory.account_trie_cursor().unwrap();
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
         let mut cached_cursor = CachedTrieCursor::new(inner_cursor, cache);
 
         // All operations should handle errors gracefully
@@ -1777,7 +1753,7 @@ mod tests {
         storage_tries.insert(hashed_address, storage_nodes);
 
         let mock_factory = MockTrieCursorFactory::new(BTreeMap::new(), storage_tries);
-        let external_store = Arc::new(Mutex::new(MockExternalTrieStore::new()));
+        let external_store = ExternalTrieStoreHandle::new(Arc::new(MockExternalTrieStore::new()));
 
         let cached_factory = CachedTrieCursorFactory::new(mock_factory, external_store.clone());
 
@@ -1798,7 +1774,7 @@ mod tests {
             b256!("3333333333333333333333333333333333333333333333333333333333333333");
 
         let noop_factory = NoopHashedCursorFactory::default();
-        let external_store = Arc::new(Mutex::new(MockExternalTrieStore::new()));
+        let external_store = ExternalTrieStoreHandle::new(Arc::new(MockExternalTrieStore::new()));
 
         let cached_factory = CachedHashedCursorFactory::new(noop_factory, external_store.clone());
 
@@ -1826,7 +1802,7 @@ mod tests {
 
         let trie_factory = MockTrieCursorFactory::new(BTreeMap::new(), storage_tries);
         let hashed_factory = NoopHashedCursorFactory::default();
-        let external_store = Arc::new(Mutex::new(MockExternalTrieStore::new()));
+        let external_store = ExternalTrieStoreHandle::new(Arc::new(MockExternalTrieStore::new()));
 
         let cache_factory = CacheCursorFactory::new(trie_factory, hashed_factory, external_store);
 
@@ -1863,11 +1839,11 @@ mod tests {
             }),
         );
 
-        let cache = Arc::new(Mutex::new(external_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(external_store));
 
         // Test that the same trie path with different hashed_address contexts
         // are treated as separate cache entries
-        let account_result = cache.lock().unwrap().get_trie_node(&root_key, None);
+        let account_result = cache.get_trie_node(&root_key, None);
 
         // Account trie should find the node
         assert!(
@@ -2004,7 +1980,7 @@ mod tests {
             }),
         );
         
-        let cache = Arc::new(Mutex::new(mock_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(mock_store));
         let mock_inner = crate::hashed_cursor::noop::NoopHashedAccountCursor::default();
         let mut cursor = CachedHashedCursor::<_, Vec<u8>>::new_account(mock_inner, cache);
         
@@ -2095,7 +2071,7 @@ mod tests {
             }),
         );
         
-        let cache = Arc::new(Mutex::new(mock_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(mock_store));
         let mock_inner = crate::hashed_cursor::noop::NoopHashedCursor;
         let mut cursor = CachedHashedCursor::<_, Vec<u8>>::new_account(mock_inner, cache);
         
@@ -2109,7 +2085,7 @@ mod tests {
         // Test move_to_first_leaf_after with non-existent trie path
         let mock_store = MockExternalTrieStore::new(); // Empty store
         
-        let cache = Arc::new(Mutex::new(mock_store));
+        let cache = ExternalTrieStoreHandle::new(Arc::new(mock_store));
         let mock_inner = crate::hashed_cursor::noop::NoopHashedCursor;
         let mut cursor = CachedHashedCursor::<_, Vec<u8>>::new_account(mock_inner, cache);
         
@@ -2225,7 +2201,7 @@ mod tests {
     #[test]
     fn test_cached_external_trie_store_separation() {
         // Test that CachedExternalTrieStore properly separates account and storage caches
-        let inner_store = Arc::new(Mutex::new(MockExternalTrieStore::new()));
+        let inner_store = Arc::new(MockExternalTrieStore::new());
         let mut cached_store = CachedExternalTrieStore::new(inner_store.clone());
         
         let test_path = Nibbles::from_nibbles(&[1, 2, 3]);

@@ -63,7 +63,7 @@ use reth_storage_errors::provider::{ProviderResult, RootMismatch};
 use reth_trie::{
     prefix_set::{PrefixSet, PrefixSetMut, TriePrefixSets},
     updates::{StorageTrieUpdates, TrieUpdates},
-    trie_cursor::{ExternalTrieStore},
+    trie_cursor::{ExternalTrieStore, ExternalTrieStoreHandle},
     HashedPostStateSorted, Nibbles, StateRoot, StoredNibbles,
 };
 use reth_trie_db::{DatabaseStateRoot, DatabaseStorageTrieCursor};
@@ -148,7 +148,7 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     /// Node storage handler.
     storage: Arc<N::Storage>,
     /// Optional external trie cache
-    trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
+    trie_cache: Option<ExternalTrieStoreHandle>,
 }
 
 impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
@@ -262,9 +262,9 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
+        trie_cache: ExternalTrieStoreHandle,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache: Some(trie_cache) }
     }
 }
 
@@ -411,7 +411,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
-        let trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>> = self.trie_cache.clone();
+        let trie_cache: Option<ExternalTrieStoreHandle> = self.trie_cache.clone();
 
         let mut state_provider = HistoricalStateProvider::new(self, block_number);
 
@@ -566,9 +566,9 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
+        trie_cache: ExternalTrieStoreHandle,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage, trie_cache: Some(trie_cache) }
     }
 
     /// Consume `DbTx` or `DbTxMut`.

@@ -27,7 +27,7 @@ use reth_storage_api::{
     TryIntoHistoricalStateProvider,
 };
 use reth_storage_errors::provider::ProviderResult;
-use reth_trie::{trie_cursor::ExternalTrieStore, HashedPostState};
+use reth_trie::{trie_cursor::{ExternalTrieStore, ExternalTrieStoreHandle}, HashedPostState};
 use reth_trie_db::StateCommitment;
 use revm_database::BundleState;
 use std::{
@@ -69,7 +69,7 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     /// The node storage handler.
     storage: Arc<N::Storage>,
     /// Optional external trie cache
-    trie_cache: Option<Arc<Mutex<dyn ExternalTrieStore>>>,
+    trie_cache: Option<ExternalTrieStoreHandle>,
 }
 
 impl<N: NodeTypes> ProviderFactory<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>> {
@@ -109,7 +109,7 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     }
 
     /// Sets the external trie cache for an existing [`ProviderFactory`].
-    pub fn with_trie_cache(mut self, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn with_trie_cache(mut self, cache: ExternalTrieStoreHandle) -> Self {
         self.trie_cache = Some(cache);
         self
     }
@@ -162,7 +162,7 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
                 self.static_file_provider.clone(),
                 self.prune_modes.clone(),
                 self.storage.clone(),
-                Some(cache.clone()),
+                cache.clone(),
             ))
         } else {
             Ok(DatabaseProvider::new(
@@ -188,7 +188,7 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
                 self.static_file_provider.clone(),
                 self.prune_modes.clone(),
                 self.storage.clone(),
-                Some(cache.clone()),
+                cache.clone(),
             )))
         } else {
             Ok(DatabaseProviderRW(DatabaseProvider::new_rw(

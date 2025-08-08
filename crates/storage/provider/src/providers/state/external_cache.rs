@@ -11,7 +11,7 @@ use reth_storage_api::{
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
     proof::Proof,
-    trie_cursor::{ExternalTrieStore, TrieCursor, TrieCursorFactory},
+    trie_cursor::{ExternalTrieStore, ExternalTrieStoreHandle, TrieCursor, TrieCursorFactory},
     updates::TrieUpdates,
     AccountProof, BranchNodeCompact, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, Nibbles, StorageMultiProof, TrieInput, TrieNode,
@@ -119,12 +119,12 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
 
 pub struct ExternalHistoricalCacheRef<'a, Provider> {
     provider: HistoricalStateProviderRef<'a, Provider>,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
+    cache: ExternalTrieStoreHandle,
 }
 
 impl<'a, Provider> ExternalHistoricalCacheRef<'a, Provider> {
     /// Create a new reference to the external historical cache.
-    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
+    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: ExternalTrieStoreHandle) -> Self {
         Self { provider, cache }
     }
 }
@@ -140,14 +140,14 @@ pub struct ExternalHistoricalCache<Provider> {
     /// Inner historical state provider
     inner: HistoricalStateProvider<Provider>,
     /// External trie store for caching trie nodes
-    cache: Arc<Mutex<dyn ExternalTrieStore + 'static>>,
+    cache: ExternalTrieStoreHandle,
 }
 
 impl<Provider: BlockNumReader + DBProvider + StateCommitmentProvider> ExternalHistoricalCache<Provider> {
     /// Create a new external historical cache wrapper.
     pub fn new(
         inner: HistoricalStateProvider<Provider>,
-        cache: Arc<Mutex<dyn ExternalTrieStore + 'static>>,
+        cache: ExternalTrieStoreHandle,
     ) -> Self {
         Self { inner, cache }
     }

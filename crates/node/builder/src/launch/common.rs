@@ -75,6 +75,7 @@ use reth_provider::{
     BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider,
     DynamoDBExternalTrieStore, DynamoDBExternalTrieStoreHandle, ProviderError, ProviderFactory,
     ProviderResult, StageCheckpointReader, StateProviderFactory, StaticFileProviderFactory,
+    ExternalTrieStoreHandle,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -491,7 +492,7 @@ where
             self.chain_spec(),
             StaticFileProvider::read_write(self.data_dir().static_files())?,
         )
-        .with_trie_cache(Arc::new(Mutex::new(DynamoDBExternalTrieStoreHandle::new(tx))))
+        .with_trie_cache(ExternalTrieStoreHandle::new(Arc::new(DynamoDBExternalTrieStoreHandle::new(tx))))
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 
