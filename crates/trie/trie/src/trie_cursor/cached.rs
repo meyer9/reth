@@ -352,10 +352,221 @@ impl<C> CachedTrieCursor<C> {
     ) -> Self {
         Self { inner, cache, current: None, hashed_address: Some(hashed_address) }
     }
-}
 
-impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
-    fn seek_exact(
+    fn find_next_branch(&mut self, key: Nibbles) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        // given a branch node in the trie, find the next branch node (either the first child that is a branch, or the next sibling)
+        info!("Finding next branch after key: {:?}", key);
+        
+        // Get the current node at the key
+        let current_node = self
+            .cache
+            .lock()
+            .unwrap()
+            .get_trie_node(&key, self.hashed_address)
+            .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
+            
+        if let Some(TrieNode::Branch(branch_node)) = current_node {
+            info!("Starting from branch node with state mask: {:?}", branch_node.state_mask);
+            
+            // First, check if any children are branches (depth-first search)
+            for nibble in 0..16u8 {
+                if branch_node.state_mask.is_bit_set(nibble) {
+                    let mut child_key = key.clone();
+                    child_key.push(nibble);
+                    
+                    info!("Checking child at nibble {} with key: {:?}", nibble, child_key);
+                    
+                    // Check if this child leads to a branch
+                    if let Some(branch_result) = self.find_branch_starting_from(child_key)? {
+                        info!("Found child branch at nibble {}", nibble);
+                        return Ok(Some(branch_result));
+                    }
+                }
+            }
+            
+            info!("No child branches found, looking for next sibling");
+            // No child branches found, look for next sibling branch
+            self.find_next_sibling_branch(key)
+        } else {
+            info!("Not starting from a branch node, looking for next branch");
+            // If we're not at a branch, find the next branch in traversal order
+            self.find_next_sibling_branch(key)
+        }
+    }
+    
+    fn find_branch_starting_from(&mut self, key: Nibbles) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        // Follow the path starting from key to find the first branch
+        info!("find_branch_starting_from: starting search from key: {:?}", key);
+        let mut current_key = key;
+        
+        loop {
+            info!("find_branch_starting_from: checking node at key: {:?}", current_key);
+            let current_node = self
+                .cache
+                .lock()
+                .unwrap()
+                .get_trie_node(&current_key, self.hashed_address)
+                .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
+                
+            match current_node {
+                Some(TrieNode::Branch(branch_node)) => {
+                    info!("find_branch_starting_from: found branch at key: {:?} with state_mask: {:?}", current_key, branch_node.state_mask);
+                    // Convert to BranchNodeCompact format
+                    let result = self.convert_to_branch_compact(current_key, branch_node)?;
+                    info!("find_branch_starting_from: successfully converted branch to compact format");
+                    return Ok(Some(result));
+                }
+                Some(TrieNode::Extension(extension_node)) => {
+                    info!("find_branch_starting_from: following extension from {:?} with key {:?}", current_key, extension_node.key);
+                    // Follow the extension
+                    current_key.extend(&extension_node.key);
+                    info!("find_branch_starting_from: extended path to: {:?}", current_key);
+                    continue;
+                }
+                Some(TrieNode::Leaf(_)) => {
+                    info!("find_branch_starting_from: reached leaf at key: {:?}, no branch found", current_key);
+                    // No branch found on this path
+                    return Ok(None);
+                }
+                Some(TrieNode::EmptyRoot) => {
+                    info!("find_branch_starting_from: reached empty root at key: {:?}, no branch found", current_key);
+                    return Ok(None);
+                }
+                None => {
+                    info!("find_branch_starting_from: no node found at key: {:?}", current_key);
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    
+    fn find_next_sibling_branch(&mut self, key: Nibbles) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        // Find the next sibling branch by going up the tree and looking for the next child
+        info!("find_next_sibling_branch: starting search for sibling after key: {:?}", key);
+        let mut current_key = key;
+        
+        while current_key.len() > 0 {
+            let current_nibble = current_key.pop().expect("checked length > 0");
+            info!("find_next_sibling_branch: going up from nibble {} to parent: {:?}", current_nibble, current_key);
+            
+            // Get the parent node
+            let parent_node = self
+                .cache
+                .lock()
+                .unwrap()
+                .get_trie_node(&current_key, self.hashed_address)
+                .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?;
+                
+            if let Some(TrieNode::Branch(branch_node)) = parent_node {
+                info!("find_next_sibling_branch: found parent branch at {:?} with state mask: {:?}", current_key, branch_node.state_mask);
+                
+                // Look for the next sibling after current_nibble
+                for nibble in (current_nibble + 1)..16u8 {
+                    if branch_node.state_mask.is_bit_set(nibble) {
+                        let mut sibling_key = current_key.clone();
+                        sibling_key.push(nibble);
+                        
+                        info!("find_next_sibling_branch: checking sibling at nibble {} with key: {:?}", nibble, sibling_key);
+                        
+                        // Check if this sibling path leads to a branch
+                        if let Some(branch_result) = self.find_branch_starting_from(sibling_key)? {
+                            info!("find_next_sibling_branch: found sibling branch at nibble {}", nibble);
+                            return Ok(Some(branch_result));
+                        } else {
+                            info!("find_next_sibling_branch: sibling at nibble {} does not lead to a branch", nibble);
+                        }
+                    } else {
+                        info!("find_next_sibling_branch: no child at nibble {}", nibble);
+                    }
+                }
+                
+                info!("find_next_sibling_branch: no more siblings at this level, continuing up from {:?}", current_key);
+                // No more siblings at this level, continue going up
+            } else if let Some(TrieNode::Extension(extension_node)) = parent_node {
+                info!("find_next_sibling_branch: parent at {:?} is extension node with key: {:?}, adjusting path", current_key, extension_node.key);
+                // If parent is an extension, we need to adjust our path
+                if current_key.len() >= extension_node.key.len() {
+                    let new_len = current_key.len() - extension_node.key.len();
+                    current_key = current_key.slice(0..new_len);
+                    info!("find_next_sibling_branch: adjusted path to: {:?}", current_key);
+                } else {
+                    info!("find_next_sibling_branch: invalid state - extension key longer than current path, breaking");
+                    // Invalid state - extension key longer than our current path
+                    break;
+                }
+            } else {
+                info!("find_next_sibling_branch: parent at {:?} is not a branch/extension (found: {:?}), breaking", current_key, parent_node.as_ref().map(|n| match n {
+                    TrieNode::Leaf(_) => "Leaf",
+                    TrieNode::EmptyRoot => "EmptyRoot",
+                    _ => "Other"
+                }));
+                // Parent is not a branch or extension, can't continue
+                break;
+            }
+        }
+        
+        info!("find_next_sibling_branch: reached root without finding next branch");
+        Ok(None)
+    }
+    
+    fn convert_to_branch_compact(&mut self, key: Nibbles, branch_node: reth_trie_common::BranchNode) -> Result<(Nibbles, BranchNodeCompact), DatabaseError> {
+        // Convert TrieNode::Branch to BranchNodeCompact format
+        info!("convert_to_branch_compact: converting branch at key: {:?} with state_mask: {:?}", key, branch_node.state_mask);
+        let mut tree_mask = TrieMask::default();
+        let mut child_keys = Vec::new();
+
+        // Collect all child keys that exist
+        for i in 0..16u8 {
+            if branch_node.state_mask.is_bit_set(i) {
+                let mut child_key = key.clone();
+                child_key.push(i);
+                child_keys.push((i, child_key));
+                info!("convert_to_branch_compact: found child at nibble {} with key: {:?}", i, child_key);
+            }
+        }
+
+        info!("convert_to_branch_compact: checking {} children to determine tree_mask", child_keys.len());
+        // Check child node types to set tree_mask correctly
+        let cache = self.cache.clone();
+        for (nibble, child_key) in child_keys {
+            if let Ok(Some(child_node)) =
+                cache.lock().unwrap().get_trie_node(&child_key, self.hashed_address)
+            {
+                match child_node {
+                    TrieNode::Branch(_) => {
+                        info!("convert_to_branch_compact: child at nibble {} is a branch - setting tree_mask bit", nibble);
+                        tree_mask.set_bit(nibble);
+                    }
+                    TrieNode::Extension(_) => {
+                        info!("convert_to_branch_compact: child at nibble {} is an extension - setting tree_mask bit", nibble);
+                        tree_mask.set_bit(nibble);
+                    }
+                    TrieNode::Leaf(_) => {
+                        info!("convert_to_branch_compact: child at nibble {} is a leaf - not setting tree_mask bit", nibble);
+                    }
+                    TrieNode::EmptyRoot => {
+                        info!("convert_to_branch_compact: child at nibble {} is empty root - not setting tree_mask bit", nibble);
+                    }
+                }
+            } else {
+                info!("convert_to_branch_compact: could not retrieve child node at nibble {} with key: {:?}", nibble, child_key);
+            }
+        }
+
+        info!("convert_to_branch_compact: final tree_mask: {:?}", tree_mask);
+        let branch_node_compact = BranchNodeCompact::new(
+            branch_node.state_mask,
+            tree_mask,
+            branch_node.state_mask, // hash_mask: assume all children have hashes available
+            branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
+            None,
+        );
+        
+        info!("convert_to_branch_compact: successfully created BranchNodeCompact for key: {:?}", key);
+        Ok((key, branch_node_compact))
+    }
+
+    fn seek_exact_cached(
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
@@ -386,7 +597,7 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
                     }
                 }
 
-                // Check child node types in parallel (conceptually - using batch lookup)
+                // Check child nodes
                 let cache = self.cache.clone();
                 for (nibble, child_key) in child_keys {
                     // TODO: error handle
@@ -419,12 +630,19 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
             }
         }
 
-        // Fall back to inner cursor
-        panic!("issue");
+        Ok(None)
+    }
+}
 
-        self.current = None;
-        let result = self.inner.seek_exact(key)?;
-
+impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
+    fn seek_exact(&mut self, key: Nibbles) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        let result = self.seek_exact_cached(key)?;
+        // let inner_result = self.inner.seek_exact(key)?;
+        // if result.as_ref() != inner_result.as_ref() {
+        //     info!("result: {:?}", result.as_ref());
+        //     info!("inner result: {:?}", inner_result.as_ref());
+        //     panic!("result mismatch");
+        // }
         Ok(result)
     }
 
@@ -432,77 +650,27 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        info!("seeking in cache for key: {:?}", key);
+        
+        let mut result = self.seek_exact_cached(key)?;
+        if result.is_none() {
+            info!("no exact match found, finding next branch");
+            result = self.find_next_branch(key)?;
 
-        let parent_node = {
-            self.cache
-                .lock()
-                .unwrap()
-                .get_trie_node(&key, self.hashed_address)
-                .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))
+
         }
-        .clone()?;
 
-        // First try the cache
-        if let Some(node) = parent_node {
-            if let TrieNode::Branch(branch_node) = node {
-                // Calculate tree_mask: set bit only for children that are branch/extension nodes
-                let mut tree_mask = TrieMask::default();
-                let mut child_keys = Vec::new();
-
-                // Collect all child keys that exist
-                for i in 0..16u8 {
-                    if branch_node.state_mask.is_bit_set(i) {
-                        let mut child_key = key.clone();
-                        child_key.push(i);
-                        child_keys.push((i, child_key));
-                    }
-                }
-
-                // Check child node types in parallel (conceptually - using batch lookup)
-                let cache = self.cache.clone();
-                for (nibble, child_key) in child_keys {
-                    if let Ok(Some(child_node)) =
-                        cache.lock().unwrap().get_trie_node(&child_key, self.hashed_address).clone()
-                    {
-                        match child_node {
-                            TrieNode::Branch(_) | TrieNode::Extension(_) => {
-                                // Child is an intermediate node - set tree_mask bit
-                                tree_mask.set_bit(nibble);
-                            }
-                            TrieNode::Leaf(_) | TrieNode::EmptyRoot => {
-                                // Child is a leaf - don't set tree_mask bit
-                            }
-                        }
-                    }
-                }
-
-                let branch_node_compact = BranchNodeCompact::new(
-                    branch_node.state_mask,
-                    tree_mask, // Only set for children that are branch/extension nodes
-                    branch_node.state_mask, // hash_mask: all children have hashes available
-                    branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
-                    None,
-                );
-                self.current = Some((key.clone(), branch_node_compact.clone()));
-                return Ok(Some((key, branch_node_compact)));
-            } else {
-                return Ok(None);
-            }
-        }
-        panic!("issue");
-
-        // Fall back to inner cursor
-        self.current = None;
-        let result = self.inner.seek(key)?;
-
+        let inner_result = self.inner.seek(key)?;
+        // if result.as_ref() != inner_result.as_ref() {
+        //     info!("result: {:?}", result.as_ref());
+        //     info!("inner result: {:?}", inner_result.as_ref());
+        //     panic!("result mismatch");
+        // }
         Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        panic!("not implemented");
-
-        // Ok(result)
+        let result = self.find_next_branch(self.current.as_ref().unwrap().0.clone())?;
+        Ok(result)
     }
 
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
@@ -2106,3 +2274,4 @@ mod tests {
         println!("Cache properly separates account and storage tries");
     }
 }
+
