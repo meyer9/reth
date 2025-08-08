@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::{
     providers::state::macros::delegate_provider_impls, AccountReader, BlockHashReader, CachedDatabaseProvider, DatabaseProvider, HashedPostStateProvider, HistoricalStateProvider, HistoricalStateProviderRef, ProviderError, StateProvider, StateRootProvider
 };
@@ -11,7 +13,7 @@ use reth_storage_api::{
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
     proof::Proof,
-    trie_cursor::{ExternalTrieStore, ExternalTrieStoreHandle, TrieCursor, TrieCursorFactory},
+    trie_cursor::{ExternalTrieStore, ExternalTrieStoreHandle, ExternalTrieStoreWithMaxBlockNumber, TrieCursor, TrieCursorFactory},
     updates::TrieUpdates,
     AccountProof, BranchNodeCompact, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, Nibbles, StorageMultiProof, TrieInput, TrieNode,
@@ -20,112 +22,17 @@ use reth_trie_db::{
     CachedDatabaseProof
 };
 use revm_database::BundleState;
-use std::{fmt::Debug, sync::{Arc, Mutex}};
-use futures::executor::block_on;
-
-/// Cached trie cursor that first checks external cache before falling back to the inner cursor.
-#[derive(Debug)]
-pub struct CachedTrieCursor<C> {
-    inner: C,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
-}
-
-impl<C> CachedTrieCursor<C> {
-    /// Create a new cached trie cursor.
-    pub fn new(inner: C, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
-        Self { inner, cache }
-    }
-}
-
-impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
-    fn seek_exact(
-        &mut self,
-        key: Nibbles,
-    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
-        // First try the cache
-        if let Some(TrieNode::Branch(branch_node)) = self.cache.lock().unwrap().get_trie_node(&key, None).map_err(|e| {
-            reth_storage_errors::db::DatabaseError::Other(format!("Cache error: {e}"))
-        })? {
-
-        let branch_node_compact = BranchNodeCompact::new(
-            branch_node.state_mask,
-            branch_node.state_mask,
-            branch_node.state_mask,
-            branch_node.stack.iter().map(|node| node.as_hash().unwrap()).collect(),
-            None,
-        );
-            return Ok(Some((key, branch_node_compact)));
-        }
-
-        // Fall back to inner cursor
-        let result = self.inner.seek_exact(key)?;
-
-        Ok(result)
-    }
-
-    fn seek(
-        &mut self,
-        key: Nibbles,
-    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
-        // For seek operations, we can't easily check cache first since we need >= behavior
-        let result = self.inner.seek(key)?;
-
-
-        Ok(result)
-    }
-
-    fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, reth_storage_errors::db::DatabaseError> {
-        let result = self.inner.next()?;
-
-        Ok(result)
-    }
-
-    fn current(&mut self) -> Result<Option<Nibbles>, reth_storage_errors::db::DatabaseError> {
-        self.inner.current()
-    }
-}
-
-/// Cached trie cursor factory that wraps cursors with caching.
-#[derive(Debug)]
-pub struct CachedTrieCursorFactory<F> {
-    inner: F,
-    cache: Arc<Mutex<dyn ExternalTrieStore>>,
-}
-
-impl<F> CachedTrieCursorFactory<F> {
-    /// Create a new cached trie cursor factory.
-    pub fn new(inner: F, cache: Arc<Mutex<dyn ExternalTrieStore>>) -> Self {
-        Self { inner, cache }
-    }
-}
-
-impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
-    type AccountTrieCursor = CachedTrieCursor<F::AccountTrieCursor>;
-    type StorageTrieCursor = CachedTrieCursor<F::StorageTrieCursor>;
-
-    fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor, reth_storage_errors::db::DatabaseError> {
-        let inner = self.inner.account_trie_cursor()?;
-        Ok(CachedTrieCursor::new(inner, self.cache.clone()))
-    }
-
-    fn storage_trie_cursor(
-        &self,
-        hashed_address: B256,
-    ) -> Result<Self::StorageTrieCursor, reth_storage_errors::db::DatabaseError> {
-        let inner = self.inner.storage_trie_cursor(hashed_address)?;
-        Ok(CachedTrieCursor::new(inner, self.cache.clone()))
-    }
-}
 
 pub struct ExternalHistoricalCacheRef<'a, Provider> {
     provider: HistoricalStateProviderRef<'a, Provider>,
     cache: ExternalTrieStoreHandle,
+    block_number: u64,
 }
 
 impl<'a, Provider> ExternalHistoricalCacheRef<'a, Provider> {
     /// Create a new reference to the external historical cache.
-    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: ExternalTrieStoreHandle) -> Self {
-        Self { provider, cache }
+    pub fn new(provider: HistoricalStateProviderRef<'a, Provider>, cache: ExternalTrieStoreHandle, block_number: u64) -> Self {
+        Self { provider, cache, block_number }
     }
 }
 
@@ -141,6 +48,8 @@ pub struct ExternalHistoricalCache<Provider> {
     inner: HistoricalStateProvider<Provider>,
     /// External trie store for caching trie nodes
     cache: ExternalTrieStoreHandle,
+
+    block_number: u64,
 }
 
 impl<Provider: BlockNumReader + DBProvider + StateCommitmentProvider> ExternalHistoricalCache<Provider> {
@@ -148,14 +57,15 @@ impl<Provider: BlockNumReader + DBProvider + StateCommitmentProvider> ExternalHi
     pub fn new(
         inner: HistoricalStateProvider<Provider>,
         cache: ExternalTrieStoreHandle,
+        block_number: u64,
     ) -> Self {
-        Self { inner, cache }
+        Self { inner, cache, block_number }
     }
 
     /// Returns a new provider that takes the `TX` as reference
     #[inline(always)]
     pub fn as_ref(&self) -> ExternalHistoricalCacheRef<'_, Provider> {
-        ExternalHistoricalCacheRef::new(self.inner.as_ref(), self.cache.clone())
+        ExternalHistoricalCacheRef::new(self.inner.as_ref(), self.cache.clone(), self.block_number)
     }
 }
 
@@ -263,7 +173,7 @@ impl<'a, Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateP
         address: Address,
         slots: &[B256],
     ) -> ProviderResult<AccountProof> {
-        Proof::cached_overlay_account_proof(self.provider.tx(), self.cache.clone(), input, address, slots)
+        Proof::cached_overlay_account_proof(self.provider.tx(), ExternalTrieStoreWithMaxBlockNumber::new(self.cache.clone(), self.block_number), input, address, slots)
             .map_err(ProviderError::from)
     }
 
@@ -272,7 +182,7 @@ impl<'a, Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateP
         input: TrieInput,
         targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {        
-        Proof::cached_overlay_multiproof(self.provider.tx(), self.cache.clone(), input, targets)
+        Proof::cached_overlay_multiproof(self.provider.tx(), ExternalTrieStoreWithMaxBlockNumber::new(self.cache.clone(), self.block_number), input, targets)
             .map_err(ProviderError::from)
     }
 

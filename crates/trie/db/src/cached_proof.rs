@@ -7,7 +7,10 @@ use reth_execution_errors::StateProofError;
 use reth_trie::{
     hashed_cursor::HashedPostStateCursorFactory,
     proof::{Proof, StorageProof},
-    trie_cursor::{CacheCursorFactory, CachedExternalTrieStore, ExternalTrieStore, ExternalTrieStoreHandle, InMemoryTrieCursorFactory},
+    trie_cursor::{
+        CacheCursorFactory, CachedExternalTrieStore, ExternalTrieStore, ExternalTrieStoreHandle,
+        ExternalTrieStoreWithMaxBlockNumber, InMemoryTrieCursorFactory,
+    },
     AccountProof, HashedPostStateSorted, HashedStorage, MultiProof, MultiProofTargets,
     StorageMultiProof, TrieInput,
 };
@@ -20,7 +23,7 @@ pub trait CachedDatabaseProof<'a, TX> {
     /// Generates the state proof for target account based on [`TrieInput`].
     fn cached_overlay_account_proof(
         tx: &'a TX,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
         input: TrieInput,
         address: Address,
         slots: &[B256],
@@ -29,7 +32,7 @@ pub trait CachedDatabaseProof<'a, TX> {
     /// Generates the state [`MultiProof`] for target hashed account and storage keys.
     fn cached_overlay_multiproof(
         tx: &'a TX,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
         input: TrieInput,
         targets: MultiProofTargets,
     ) -> Result<MultiProof, StateProofError>;
@@ -37,7 +40,6 @@ pub trait CachedDatabaseProof<'a, TX> {
 
 impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
     for Proof<DatabaseTrieCursorFactory<'a, TX>, DatabaseHashedCursorFactory<'a, TX>>
-
 {
     /// Create a new [Proof] instance from database transaction.
     fn from_tx(tx: &'a TX) -> Self {
@@ -46,7 +48,7 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
 
     fn cached_overlay_account_proof(
         tx: &'a TX,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
         input: TrieInput,
         address: Address,
         slots: &[B256],
@@ -54,17 +56,14 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
         let nodes_sorted = input.nodes.into_sorted();
         let state_sorted = input.state.into_sorted();
 
-        let cached_trie_store = ExternalTrieStoreHandle::new(Arc::new(CachedExternalTrieStore::new(cache)));
+        let cached_trie_store = ExternalTrieStoreWithMaxBlockNumber::new(
+            ExternalTrieStoreHandle::new(Arc::new(CachedExternalTrieStore::new(cache.inner))),
+            cache.max_block_number,
+        );
 
         let cached_trie_factory = CacheCursorFactory::new(
-            InMemoryTrieCursorFactory::new(
-                DatabaseTrieCursorFactory::new(tx),
-                &nodes_sorted,
-            ),
-            HashedPostStateCursorFactory::new(
-                DatabaseHashedCursorFactory::new(tx),
-                &state_sorted,
-            ),
+            InMemoryTrieCursorFactory::new(DatabaseTrieCursorFactory::new(tx), &nodes_sorted),
+            HashedPostStateCursorFactory::new(DatabaseHashedCursorFactory::new(tx), &state_sorted),
             cached_trie_store,
         );
 
@@ -77,23 +76,16 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
 
     fn cached_overlay_multiproof(
         tx: &'a TX,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
         input: TrieInput,
         targets: MultiProofTargets,
     ) -> Result<MultiProof, StateProofError> {
         let nodes_sorted = input.nodes.into_sorted();
         let state_sorted = input.state.into_sorted();
 
-
         let cached_trie_factory = CacheCursorFactory::new(
-            InMemoryTrieCursorFactory::new(
-                DatabaseTrieCursorFactory::new(tx),
-                &nodes_sorted,
-            ),
-            HashedPostStateCursorFactory::new(
-                DatabaseHashedCursorFactory::new(tx),
-                &state_sorted,
-            ),
+            InMemoryTrieCursorFactory::new(DatabaseTrieCursorFactory::new(tx), &nodes_sorted),
+            HashedPostStateCursorFactory::new(DatabaseHashedCursorFactory::new(tx), &state_sorted),
             cache,
         );
 
@@ -104,7 +96,6 @@ impl<'a, TX: DbTx> CachedDatabaseProof<'a, TX>
             .multiproof(targets)
     }
 }
-
 
 /// Extends [`StorageProof`] with operations specific for working with a database transaction.
 pub trait CachedDatabaseStorageProof<'a, TX> {

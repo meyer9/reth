@@ -78,9 +78,30 @@ impl DynamoDBExternalTrieStoreHandle {
     }
 }
 
+impl ExternalTrieStore for DynamoDBExternalTrieStoreHandle {
+    fn get_trie_node(
+        &self,
+        key: &Nibbles,
+        hashed_address: Option<B256>,
+        max_block_number: u64,
+    ) -> Result<Option<TrieNode>, ProviderError> {
+        info!(
+            "Fetching trie node from cache for key: {:?}, hashed_address: {:?}",
+            key, hashed_address
+        );
+        let (tx, rx) = mpsc::channel();
+        let message = Message { key: key.clone(), hashed_account: hashed_address, max_block_number, response: tx };
+        self.sender.send(message).unwrap();
+        let node = rx.recv().unwrap();
+        info!("Got trie node from cache for key: {:?}", key);
+        return node;
+    }
+}
+
 pub struct Message {
     pub key: Nibbles,
     pub hashed_account: Option<B256>,
+    pub max_block_number: u64,
     // TODO: allow non-branches
     pub response: mpsc::Sender<Result<Option<TrieNode>, ProviderError>>,
 }
@@ -170,20 +191,20 @@ impl DynamoDBExternalTrieStore {
         &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
+        max_block_number: u64,
     ) -> Result<Option<TrieNode>, ProviderError> {
-        let mut key_map = HashMap::new();
-
-        key_map.insert(
-            "full_path".to_string(),
-            AttributeValue::B(self.path_to_key(&key, hashed_address).into()),
-        );
-        key_map.insert("block_number".to_string(), AttributeValue::N("0".to_string()));
-
         let response = self
             .client
-            .get_item()
+            .query()
+            // find where full_path is equal and block_number is greater than or equal to min_block_number
+            .key_condition_expression(
+                "full_path = :path AND block_number <= :max_block_number"
+            )
+            .limit(1)
+            .scan_index_forward(false)
+            .expression_attribute_values(":path", AttributeValue::B(self.path_to_key(&key, hashed_address).into()))
+            .expression_attribute_values(":max_block_number", AttributeValue::N(max_block_number.to_string()))
             .table_name(&self.table_name)
-            .set_key(Some(key_map))
             .send()
             .await
             .map_err(|e| {
@@ -193,7 +214,7 @@ impl DynamoDBExternalTrieStore {
                 )))
             })?;
 
-        if let Some(item) = response.item {
+        if let Some(item) = response.items.as_ref().map(|items| items.first()).flatten() {
             let Ok(node) = self.item_to_node(&item) else {
                 warn!("Invalid trie node in DynamoDB for key: {:?}", key);
                 return Ok(None);
@@ -211,32 +232,15 @@ impl DynamoDBExternalTrieStore {
             let message = receiver.recv().unwrap();
             let key = message.key;
             let hashed_address = message.hashed_account;
+            let max_block_number = message.max_block_number;
             let tx = message.response;
 
-            let result = self.get_trie_node(&key, hashed_address).await;
+            let result = self.get_trie_node(&key, hashed_address, max_block_number).await;
             tx.send(result).unwrap();
         }
     }
 }
 
-impl ExternalTrieStore for DynamoDBExternalTrieStoreHandle {
-    fn get_trie_node(
-        &self,
-        key: &Nibbles,
-        hashed_address: Option<B256>,
-    ) -> Result<Option<TrieNode>, ProviderError> {
-        info!(
-            "Fetching trie node from cache for key: {:?}, hashed_address: {:?}",
-            key, hashed_address
-        );
-        let (tx, rx) = mpsc::channel();
-        let message = Message { key: key.clone(), hashed_account: hashed_address, response: tx };
-        self.sender.send(message).unwrap();
-        let node = rx.recv().unwrap();
-        info!("Got trie node from cache for key: {:?}", key);
-        return node;
-    }
-}
 
 /// Cache key that combines trie path with optional hashed address for storage tries
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -257,11 +261,12 @@ impl CacheKey {
 pub struct CachedExternalTrieStore<T> {
     inner: T,
     cache: Arc<Mutex<LruMap<CacheKey, TrieNode>>>,
+    current_block_number: Arc<Mutex<u64>>,
 }
 
 impl<T> CachedExternalTrieStore<T> {
     pub fn new(inner: T) -> Self {
-        Self { inner, cache: Arc::new(Mutex::new(LruMap::new(ByLength::new(100000)))) }
+        Self { inner, cache: Arc::new(Mutex::new(LruMap::new(ByLength::new(100000)))), current_block_number: Arc::new(Mutex::new(0)) }
     }
 }
 
@@ -270,7 +275,13 @@ impl<T: Debug + Send + Sync + ExternalTrieStore> ExternalTrieStore for CachedExt
         &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
+        block_number: u64
     ) -> Result<Option<TrieNode>, ProviderError> {
+        if block_number != *self.current_block_number.lock().unwrap() {
+            *self.current_block_number.lock().unwrap() = block_number;
+            self.cache.lock().unwrap().clear();
+        }
+
         let cache_key = CacheKey::new(key.clone(), hashed_address);
         
         // Try to get from cache first
@@ -283,7 +294,7 @@ impl<T: Debug + Send + Sync + ExternalTrieStore> ExternalTrieStore for CachedExt
             Ok(Some(node))
         } else {
             // Cache miss - fetch from inner store
-            let node = self.inner.get_trie_node(key, hashed_address)?;
+            let node = self.inner.get_trie_node(key, hashed_address, block_number)?;
             if let Some(trie_node) = node {
                 let node_clone = trie_node.clone();
                 // Store in cache with the composite key
@@ -304,7 +315,24 @@ pub trait ExternalTrieStore: Send + Sync + Debug {
         &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
+        block_number: u64,
     ) -> Result<Option<TrieNode>, ProviderError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalTrieStoreWithMaxBlockNumber{
+    pub inner: ExternalTrieStoreHandle,
+    pub max_block_number: u64,
+}
+
+impl ExternalTrieStoreWithMaxBlockNumber {
+    pub fn new(inner: ExternalTrieStoreHandle, max_block_number: u64) -> Self {
+        Self { inner, max_block_number }
+    }
+
+    pub fn get_trie_node(&self, key: &Nibbles, hashed_address: Option<B256>) -> Result<Option<TrieNode>, ProviderError> {
+        self.inner.get_trie_node(key, hashed_address, self.max_block_number)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -321,8 +349,9 @@ impl ExternalTrieStore for ExternalTrieStoreHandle {
         &self,
         key: &Nibbles,
         hashed_address: Option<B256>,
+        block_number: u64,
     ) -> Result<Option<TrieNode>, ProviderError> {
-        self.0.get_trie_node(key, hashed_address)
+        self.0.get_trie_node(key, hashed_address, block_number)
     }
 }
 
@@ -330,7 +359,7 @@ impl ExternalTrieStore for ExternalTrieStoreHandle {
 #[derive(Debug)]
 pub struct CachedTrieCursor<C> {
     inner: C,
-    cache: ExternalTrieStoreHandle,
+    cache: ExternalTrieStoreWithMaxBlockNumber,
     current: Option<(Nibbles, BranchNodeCompact)>,
     /// For storage tries, this contains the hashed address to properly encode cache keys
     hashed_address: Option<B256>,
@@ -338,14 +367,14 @@ pub struct CachedTrieCursor<C> {
 
 impl<C> CachedTrieCursor<C> {
     /// Create a new cached trie cursor.
-    pub fn new(inner: C, cache: ExternalTrieStoreHandle) -> Self {
+    pub fn new(inner: C, cache: ExternalTrieStoreWithMaxBlockNumber) -> Self {
         Self { inner, cache, current: None, hashed_address: None }
     }
 
     /// Create a new cached storage trie cursor with hashed address.
     pub fn new_storage(
         inner: C,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
         hashed_address: B256,
     ) -> Self {
         Self { inner, cache, current: None, hashed_address: Some(hashed_address) }
@@ -676,12 +705,12 @@ impl<C: TrieCursor> TrieCursor for CachedTrieCursor<C> {
 #[derive(Debug, Clone)]
 pub struct CachedTrieCursorFactory<F> {
     inner: F,
-    cache: ExternalTrieStoreHandle,
+    cache: ExternalTrieStoreWithMaxBlockNumber,
 }
 
 impl<F> CachedTrieCursorFactory<F> {
     /// Create a new cached trie cursor factory.
-    pub fn new(inner: F, cache: ExternalTrieStoreHandle) -> Self {
+    pub fn new(inner: F, cache: ExternalTrieStoreWithMaxBlockNumber) -> Self {
         Self { inner, cache }
     }
 }
@@ -710,7 +739,7 @@ impl<F: TrieCursorFactory> TrieCursorFactory for CachedTrieCursorFactory<F> {
 #[derive(Debug, Clone)]
 pub struct CachedHashedCursor<F, V> {
     inner: F,
-    cache: ExternalTrieStoreHandle,
+    cache: ExternalTrieStoreWithMaxBlockNumber,
     /// For storage cursors, this contains the hashed address. For account cursors, this is None.
     hashed_address: Option<B256>,
     current_key_parent_path: Option<Nibbles>,
@@ -724,7 +753,7 @@ where
     V: TrieValueDecoder,
 {
     /// Create a new account cursor (no hashed address)
-    pub fn new_account(inner: F, cache: ExternalTrieStoreHandle) -> Self {
+    pub fn new_account(inner: F, cache: ExternalTrieStoreWithMaxBlockNumber) -> Self {
         Self {
             inner,
             cache,
@@ -736,7 +765,7 @@ where
     }
 
     /// Create a new storage cursor (with hashed address)
-    pub fn new_storage(inner: F, cache: ExternalTrieStoreHandle, hashed_address: B256) -> Self {
+    pub fn new_storage(inner: F, cache: ExternalTrieStoreWithMaxBlockNumber, hashed_address: B256) -> Self {
         Self {
             inner,
             cache,
@@ -1037,11 +1066,11 @@ where
 #[derive(Debug, Clone)]
 pub struct CachedHashedCursorFactory<F> {
     inner: F,
-    cache: ExternalTrieStoreHandle,
+    cache: ExternalTrieStoreWithMaxBlockNumber,
 }
 
 impl<F> CachedHashedCursorFactory<F> {
-    pub fn new(inner: F, cache: ExternalTrieStoreHandle) -> Self {
+    pub fn new(inner: F, cache: ExternalTrieStoreWithMaxBlockNumber) -> Self {
         Self { inner, cache }
     }
 }
@@ -1089,7 +1118,7 @@ impl<T, H> CacheCursorFactory<T, H> {
     pub fn new(
         trie_cursor_factory: T,
         hashed_cursor_factory: H,
-        cache: ExternalTrieStoreHandle,
+        cache: ExternalTrieStoreWithMaxBlockNumber,
     ) -> Self {
         Self {
             trie_cursor_factory: CachedTrieCursorFactory::new(trie_cursor_factory, cache.clone()),
@@ -1165,6 +1194,7 @@ mod tests {
             &self,
             key: &Nibbles,
             _hashed_address: Option<B256>,
+            _block_number: u64,
         ) -> Result<Option<TrieNode>, ProviderError> {
             Ok(self.nodes.get(key).cloned())
         }

@@ -207,8 +207,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
 
         // Wrap with external cache if available
         if let Some(cache) = &self.trie_cache {
-            // TODO(Julian): fixme
-            let cached_provider = ExternalHistoricalCacheRef::new(state_provider, cache.clone());
+            // TODO(Julian): fixme - should not be 0
+            let cached_provider = ExternalHistoricalCacheRef::new(state_provider, cache.clone(), 0);
             Ok(Box::new(cached_provider))
         } else {
             Ok(Box::new(state_provider))
@@ -434,7 +434,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
 
         // Wrap with external cache if available
         if let Some(cache) = trie_cache {
-            let historical_cache_ref = ExternalHistoricalCache::new(state_provider, cache);
+            let historical_cache_ref = ExternalHistoricalCache::new(state_provider, cache, block_number);
             Ok(Box::new(historical_cache_ref))
         } else {
             Ok(Box::new(state_provider))
