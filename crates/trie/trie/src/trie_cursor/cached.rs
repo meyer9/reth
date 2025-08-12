@@ -742,7 +742,7 @@ pub struct CachedHashedCursor<F, V> {
     cache: ExternalTrieStoreWithMaxBlockNumber,
     /// For storage cursors, this contains the hashed address. For account cursors, this is None.
     hashed_address: Option<B256>,
-    current_key_parent_path: Option<Nibbles>,
+    current_key_path: Option<Nibbles>,
     current_key: Option<B256>,
     _phantom: std::marker::PhantomData<V>,
 }
@@ -759,7 +759,7 @@ where
             cache,
             hashed_address: None,
             current_key: None,
-            current_key_parent_path: None,
+            current_key_path: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -771,13 +771,12 @@ where
             cache,
             hashed_address: Some(hashed_address),
             current_key: None,
-            current_key_parent_path: None,
+            current_key_path: None,
             _phantom: std::marker::PhantomData,
         }
     }
 
     fn traverse_tree(&mut self, key: B256) -> Result<Option<(B256, V)>, DatabaseError> {
-        let mut parent_key = Nibbles::new();
         let mut current_key = Nibbles::new();
         let mut current = self
             .cache
@@ -800,7 +799,6 @@ where
                 // first bit after or equal to nibble, otherwise, go up one level
                 let next_branch =
                     (child_nibble..=15).find(|&i| branch_node.state_mask.is_bit_set(i));
-                parent_key = current_key.clone();
                 current_key.push(next_branch.unwrap_or(15));
 
                 // if there is a branch to traverse, follow it
@@ -817,7 +815,6 @@ where
                     return self.move_to_first_leaf_after(&current_key);
                 }
             } else if let TrieNode::Extension(extension_node) = current {
-                parent_key = current_key.clone();
                 current_key.extend(&extension_node.key);
                 let key_nibbles = Nibbles::unpack(key);
 
@@ -839,7 +836,7 @@ where
                 let key_nibbles = current_key.join(&leaf_node.key);
                 let full_key = B256::from_slice(&key_nibbles.pack());
                 self.current_key = Some(full_key);
-                self.current_key_parent_path = Some(parent_key);
+                self.current_key_path = Some(current_key);
                 
                 // Use the generic decoder
                 let value = V::decode_from_leaf(&leaf_node.value)?;
@@ -897,9 +894,12 @@ where
                     info!("Found extension node with key: {:?}", extension_node.key);
                     current_parent = current_parent.slice(0..current_parent.len() - extension_node.key.len());
                 } else {
-                    if current_parent.pop().is_none() {
+                    let Some(bit) = current_parent.pop() else {
                         return Ok(None);
-                    }
+                    };
+
+                    current_bit = bit;
+                    continue;
                 }
             }
         
@@ -947,9 +947,9 @@ where
                     if current_key.len() > 0 {
                         let mut parent_path = current_key.clone();
                         parent_path.pop();
-                        self.current_key_parent_path = Some(parent_path);
+                        self.current_key_path = Some(current_key);
                     } else {
-                        self.current_key_parent_path = Some(Nibbles::new());
+                        self.current_key_path = Some(Nibbles::new());
                     }
                     
                     // Decode the value using the generic decoder
@@ -965,57 +965,13 @@ where
     }
 
     fn next_child(&mut self) -> Result<Option<(B256, V)>, DatabaseError> {
-        let Some((mut current_key_parent_path, current_key)) =
-            self.current_key_parent_path.zip(self.current_key)
+        let Some((mut current_key_path, current_key)) =
+            self.current_key_path.zip(self.current_key)
         else {
             return Ok(None);
         };
 
-        let current_key = Nibbles::unpack(current_key);
-        info!("finding next child after key: {:?}", current_key);
-
-        while current_key_parent_path.len() > 0 {
-            info!("current key parent path: {:?}", current_key_parent_path);
-            // get parent
-            let Some(parent_node) = self
-                .cache
-                .get_trie_node(&current_key_parent_path, self.hashed_address)
-                .map_err(|e| DatabaseError::Other(format!("Cache error: {e}")))?
-                .clone()
-            else {
-                current_key_parent_path.pop();
-                continue;
-            };
-            if let TrieNode::Branch(branch_node) = parent_node {
-                let child_nibble =
-                    current_key.get(current_key_parent_path.len()).expect("key is not long enough");
-                // check if there is another child after this one, otherwise go up one level (remove last nibble)
-                for i in (child_nibble + 1)..=15 {
-                    info!(
-                        "checking child nibble: {:?}, branch node: {:?}",
-                        i, branch_node.state_mask
-                    );
-                    if branch_node.state_mask.is_bit_set(i) {
-                        info!("found child nibble: {:?}", i);
-                        let next_key =
-                            current_key_parent_path.join(&Nibbles::from_nibbles(&[i as u8]));
-
-                        return self.move_to_first_leaf_after(&next_key);
-                    }
-                }
-                info!("got branch node, going up one level");
-                // no more children, go up one level
-                current_key_parent_path.pop();
-            } else if let TrieNode::Extension(_extension_node) = parent_node {
-                info!("got extension node, going up one level");
-                // no more children, go up one level
-                current_key_parent_path.pop();
-            } else if let TrieNode::Leaf(_leaf_node) = parent_node {
-                panic!("leaf node found in parent");
-            }
-        }
-
-        Ok(None)
+        return self.move_to_first_leaf_after(&current_key_path);
     }
 }
 

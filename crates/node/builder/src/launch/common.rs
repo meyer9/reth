@@ -477,9 +477,9 @@ where
         tokio::spawn(async move {
             let historical_cache = Arc::new(
                 DynamoDBExternalTrieStore::new(
-                    "manual_base_mainnet_historical_snapshot".to_string(),
+                    "TriePreimages".to_string(),
                     Some("us-east-1".to_string()),
-                    None,
+                    Some("http://localhost:8000".to_string()),
                 )
                 .await
                 .unwrap(),
