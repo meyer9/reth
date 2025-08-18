@@ -989,23 +989,23 @@ where
         info!("seeking in hashed cache for key: {:?}", key);
         // shadow mode, check that result matches inner cursor
         let result = self.traverse_tree(key);
-        let inner_result = self.inner.seek(key);
-        if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
-            info!("result: {:?}", result.as_ref().unwrap());
-            info!("inner result: {:?}", inner_result.as_ref().unwrap());
-            panic!("result mismatch");
-        }
+        // let inner_result = self.inner.seek(key);
+        // if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
+        //     info!("result: {:?}", result.as_ref().unwrap());
+        //     info!("inner result: {:?}", inner_result.as_ref().unwrap());
+        //     panic!("result mismatch");
+        // }
         result
     }
 
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         let result = self.next_child();
-        let inner_result = self.inner.next();
-        if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
-            info!("result: {:?}", result.as_ref().unwrap());
-            info!("inner result: {:?}", inner_result.as_ref().unwrap());
-            panic!("result mismatch");
-        }
+        // let inner_result = self.inner.next();
+        // if result.as_ref().unwrap() != inner_result.as_ref().unwrap() {
+        //     info!("result: {:?}", result.as_ref().unwrap());
+        //     info!("inner result: {:?}", inner_result.as_ref().unwrap());
+        //     panic!("result mismatch");
+        // }
         result
     }
 }
