@@ -49,12 +49,12 @@ pub enum PreimageEntry {
 
 impl PreimageEntry {
     /// Create a new preimage entry
-    pub fn new_storage(hash: alloy_primitives::B256, hashed_address: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: Option<u64>) -> Self {
-        Self::Storage(StoragePreimageEntry { block_number: block_number.unwrap_or(0), hash, hashed_address, path, data })
+    pub fn new_storage(hash: alloy_primitives::B256, hashed_address: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: u64) -> Self {
+        Self::Storage(StoragePreimageEntry { block_number, hash, hashed_address, path, data })
     }
 
-    pub fn new_account(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: Option<u64>) -> Self {
-        Self::Account(AccountPreimageEntry { block_number: block_number.unwrap_or(0), hash, path, data })
+    pub fn new_account(hash: alloy_primitives::B256, path: Nibbles, data: Vec<u8>, block_number: u64) -> Self {
+        Self::Account(AccountPreimageEntry { block_number, hash, path, data })
     }
 }
 

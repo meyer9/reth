@@ -1,6 +1,6 @@
 //! Trie preimage extractor for reading from reth database
 
-use crate::{hash_builder_2::ProofRetainer, AccountPreimageEntry, PreimageEntry, PreimageStorage, PreimageStorageResult, StoragePreimageEntry};
+use crate::{hash_builder_2::UniversalProofRetainer, PreimageEntry, PreimageStorage, PreimageStorageResult, StoragePreimageEntry};
 use alloy_primitives::{keccak256, B256};
 use alloy_rlp::Encodable;
 use bytes::BufMut;
@@ -12,12 +12,10 @@ use reth_trie_db::{DatabaseTrieCursorFactory, DatabaseHashedCursorFactory};
 use std::{time::Instant};
 use tracing::{info};
 use std::time::Duration;
-use reth_trie::hashed_cursor::HashedStorageCursor;
+use reth_trie::{hashed_cursor::HashedStorageCursor, hash_builder::HashBuilder};
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 use async_stream::{try_stream, stream};
-
-use crate::hash_builder_2::HashBuilder;
 
 const FLUSH_THRESHOLD: usize = 2000;
 
@@ -93,6 +91,7 @@ struct StorageTriePreimageExtractor<H, T> {
     hashed_cursor_factory: H,
     trie_cursor_factory: T,
     hashed_address: B256,
+    current_block_number: u64,
     root: B256,
 }
 
@@ -102,8 +101,9 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
         hashed_cursor_factory: H,
         trie_cursor_factory: T,
         hashed_address: B256,
+        current_block_number: u64,
     ) -> Self {
-        Self { hashed_cursor_factory, trie_cursor_factory, hashed_address, root: EMPTY_ROOT_HASH }
+        Self { hashed_cursor_factory, trie_cursor_factory, hashed_address, current_block_number, root: EMPTY_ROOT_HASH }
     }
 
     fn extract_trie_preimages<'a>(
@@ -113,7 +113,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
         try_stream! {
             let mut hashed_storage_cursor =
                 self.hashed_cursor_factory.hashed_storage_cursor(self.hashed_address)?;
-            let mut hash_builder = HashBuilder::default().with_updates(true).with_proof_retainer(ProofRetainer::new());
+            let mut hash_builder = HashBuilder::new().with_updates(true).with_proof_retainer(UniversalProofRetainer::new());
 
             if hashed_storage_cursor.is_storage_empty()? {
                 self.root = EMPTY_ROOT_HASH;
@@ -158,12 +158,12 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
 
                         for (key, value) in proof_nodes.iter() {
                             let hash_data = keccak256(&value);
-                            let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), None);
+                            let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), self.current_block_number);
                             stats.storage_preimages += 1;
                             yield storage_preimage_entry;
                         }
 
-                        hash_builder = new_hash_builder.with_proof_retainer(ProofRetainer::new());
+                        hash_builder = new_hash_builder.with_proof_retainer(UniversalProofRetainer::new());
                         hash_builder.set_updates(true);
                     }
                 }
@@ -173,7 +173,7 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
 
                 for (key, value) in proof_nodes.iter() {
                     let hash_data = keccak256(&value);
-                    let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), None);
+                    let storage_preimage_entry = PreimageEntry::new_storage(hash_data, self.hashed_address, *key, value.to_vec(), self.current_block_number);
                     stats.storage_preimages += 1;
                     yield storage_preimage_entry;
                 }
@@ -188,14 +188,16 @@ impl<H: HashedCursorFactory, T: TrieCursorFactory> StorageTriePreimageExtractor<
 struct AccountTriePreimageExtractor<H, T> {
     hashed_cursor_factory: H,
     trie_cursor_factory: T,
+    current_block_number: u64,
 }
 
 impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePreimageExtractor<H, T> {
     fn new(
         hashed_cursor_factory: H,
         trie_cursor_factory: T,
+        current_block_number: u64,
     ) -> Self {
-        Self { hashed_cursor_factory, trie_cursor_factory }
+        Self { hashed_cursor_factory, trie_cursor_factory, current_block_number }
     }
 
     fn extract_trie_preimages<'a>(
@@ -213,7 +215,7 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                 hashed_cursor,
             );
 
-            let mut hash_builder = HashBuilder::default().with_updates(true).with_proof_retainer(ProofRetainer::new());
+            let mut hash_builder = HashBuilder::new().with_updates(true).with_proof_retainer(UniversalProofRetainer::new());
             let mut account_rlp = Vec::new();
             
             let start_time = Instant::now();
@@ -242,12 +244,12 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
 
                             for (key, value) in retained_proof_nodes.iter() {
                                 let hash_data = keccak256(&value);
-                                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), None);
+                                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), self.current_block_number);
                                 stats.account_preimages += 1;
                                 yield account_preimage_entry;
                             }
 
-                            hash_builder = new_hash_builder.with_proof_retainer(ProofRetainer::new());
+                            hash_builder = new_hash_builder.with_proof_retainer(UniversalProofRetainer::new());
                             hash_builder.set_updates(true);
 
                         }
@@ -256,6 +258,7 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
                             self.hashed_cursor_factory.clone(),
                             self.trie_cursor_factory.clone(),
                             hashed_address,
+                            self.current_block_number,
                         );
                         let storage_stream = storage_root_extractor.extract_trie_preimages(stats);
                         {
@@ -278,7 +281,7 @@ impl<H: HashedCursorFactory + Clone, T: TrieCursorFactory + Clone> AccountTriePr
 
             for (key, value) in retained_proof_nodes.iter() {
                 let hash_data = keccak256(&value);
-                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), None);
+                let account_preimage_entry = PreimageEntry::new_account(hash_data, *key, value.to_vec(), self.current_block_number);
                 stats.account_preimages += 1;
                 yield account_preimage_entry;
             }
@@ -313,6 +316,7 @@ impl TriePreimageExtractor {
     pub async fn extract_all_preimages_streaming<TX: DbTx>(
         tx: &TX,
         storage: &dyn PreimageStorage,
+        current_block_number: u64,
     ) -> PreimageStorageResult<DumpStatistics> {
         let hashed_cursor_factory = DatabaseHashedCursorFactory::new(tx);
         let trie_cursor_factory = DatabaseTrieCursorFactory::new(tx);
@@ -322,6 +326,7 @@ impl TriePreimageExtractor {
             let account_trie_extractor = AccountTriePreimageExtractor::new(
                 hashed_cursor_factory,
                 trie_cursor_factory,
+                current_block_number,
             );
 
             let stream = account_trie_extractor.extract_trie_preimages(&mut stats);

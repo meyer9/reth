@@ -1,10 +1,11 @@
 //! Database command for dumping trie preimages
 
+use alloy_consensus::BlockHeader;
 use clap::Parser;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_db_common::DbTool;
 use reth_preimage_storage::PreimageStorage;
-use reth_provider::{providers::ProviderNodeTypes, DatabaseProviderFactory};
+use reth_provider::{providers::ProviderNodeTypes, BlockNumReader, DatabaseProviderFactory};
 use std::path::PathBuf;
 use tracing::{info};
 
@@ -65,6 +66,8 @@ impl<C: ChainSpecParser> Command<C> {
 
         let provider = tool.provider_factory.database_provider_ro()?;
         let tx = provider.tx_ref();
+        let current_block_number = provider.last_block_number()
+            .map_err(|e| eyre::eyre!("Failed to get last block number: {}", e))?;
 
         // Configure storage based on the selected backend
         let storage: Box<dyn PreimageStorage> = match self.storage {
@@ -101,7 +104,7 @@ impl<C: ChainSpecParser> Command<C> {
         };
 
         // Extract and stream preimages directly to storage
-        let stats = TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage).await?;
+        let stats = TriePreimageExtractor::extract_all_preimages_streaming(tx, &*storage, current_block_number).await?;
 
         drop(provider);
 

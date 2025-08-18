@@ -15,7 +15,7 @@ use alloy_rlp::{BufMut, Encodable};
 use tracing::info;
 use reth_execution_errors::trie::StateProofError;
 use reth_trie_common::{
-    proof::ProofRetainer, AccountProof, MultiProof, MultiProofTargets, StorageMultiProof,
+    proof::PrefixProofRetainer, AccountProof, MultiProof, MultiProofTargets, StorageMultiProof,
 };
 
 mod blinded;
@@ -285,7 +285,7 @@ where
         let trie_cursor = self.trie_cursor_factory.storage_trie_cursor(self.hashed_address)?;
         let walker = TrieWalker::storage_trie(trie_cursor, self.prefix_set.freeze());
 
-        let retainer = ProofRetainer::from_iter(target_nibbles);
+        let retainer = PrefixProofRetainer::from_iter(target_nibbles);
         let mut hash_builder = HashBuilder::default()
             .with_proof_retainer(retainer)
             .with_updates(self.collect_branch_node_masks);

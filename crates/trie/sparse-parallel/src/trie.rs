@@ -2119,7 +2119,7 @@ mod tests {
     };
     use reth_trie_common::{
         prefix_set::PrefixSetMut,
-        proof::{ProofNodes, ProofRetainer},
+        proof::{ProofNodes, PrefixProofRetainer},
         updates::TrieUpdates,
         BranchNode, ExtensionNode, HashBuilder, LeafNode, RlpNode, TrieMask, TrieNode,
         EMPTY_ROOT_HASH,
@@ -2408,7 +2408,7 @@ mod tests {
 
         let mut hash_builder = HashBuilder::default()
             .with_updates(true)
-            .with_proof_retainer(ProofRetainer::from_iter(proof_targets));
+            .with_proof_retainer(PrefixProofRetainer::from_iter(proof_targets));
 
         let mut prefix_set = PrefixSetMut::default();
         prefix_set.extend_keys(state.clone().into_iter().map(|(nibbles, _)| nibbles));

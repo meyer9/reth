@@ -924,7 +924,7 @@ mod tests {
     use reth_primitives_traits::Account;
     use reth_trie::{updates::StorageTrieUpdates, HashBuilder, MultiProof, EMPTY_ROOT_HASH};
     use reth_trie_common::{
-        proof::{ProofNodes, ProofRetainer},
+        proof::{ProofNodes, PrefixProofRetainer},
         BranchNode, LeafNode, StorageMultiProof, TrieMask,
     };
 
@@ -953,7 +953,7 @@ mod tests {
 
     #[test]
     fn reveal_account_empty() {
-        let retainer = ProofRetainer::from_iter([Nibbles::default()]);
+        let retainer = PrefixProofRetainer::from_iter([Nibbles::default()]);
         let mut hash_builder = HashBuilder::default().with_proof_retainer(retainer);
         hash_builder.root();
         let proofs = hash_builder.take_proof_nodes();
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn reveal_storage_slot_empty() {
-        let retainer = ProofRetainer::from_iter([Nibbles::default()]);
+        let retainer = PrefixProofRetainer::from_iter([Nibbles::default()]);
         let mut hash_builder = HashBuilder::default().with_proof_retainer(retainer);
         hash_builder.root();
         let proofs = hash_builder.take_proof_nodes();
@@ -1164,7 +1164,7 @@ mod tests {
         let value_3 = U256::from(rng.random::<u64>());
 
         let mut storage_hash_builder = HashBuilder::default()
-            .with_proof_retainer(ProofRetainer::from_iter([slot_path_1, slot_path_2]));
+            .with_proof_retainer(PrefixProofRetainer::from_iter([slot_path_1, slot_path_2]));
         storage_hash_builder.add_leaf(slot_path_1, &alloy_rlp::encode_fixed_size(&value_1));
         storage_hash_builder.add_leaf(slot_path_2, &alloy_rlp::encode_fixed_size(&value_2));
 
@@ -1185,7 +1185,7 @@ mod tests {
         let mut trie_account_2 = account_2.into_trie_account(EMPTY_ROOT_HASH);
 
         let mut hash_builder = HashBuilder::default()
-            .with_proof_retainer(ProofRetainer::from_iter([address_path_1, address_path_2]));
+            .with_proof_retainer(PrefixProofRetainer::from_iter([address_path_1, address_path_2]));
         hash_builder.add_leaf(address_path_1, &alloy_rlp::encode(trie_account_1));
         hash_builder.add_leaf(address_path_2, &alloy_rlp::encode(trie_account_2));
 

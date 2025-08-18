@@ -229,7 +229,10 @@ impl DynamoDBExternalTrieStore {
 
     pub async fn serve(&self, receiver: &mut mpsc::Receiver<Message>) {
         loop {
-            let message = receiver.recv().unwrap();
+            let Ok(message) = receiver.recv() else {
+                info!("DynamoDBExternalTrieStore: receiver closed, exiting serve loop");
+                break;
+            };
             let key = message.key;
             let hashed_address = message.hashed_account;
             let max_block_number = message.max_block_number;

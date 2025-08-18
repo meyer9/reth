@@ -28,7 +28,7 @@ use reth_trie::{
     DecodedMultiProof, DecodedStorageMultiProof, HashBuilder, HashedPostStateSorted,
     MultiProofTargets, Nibbles, TRIE_ACCOUNT_RLP_MAX_SIZE,
 };
-use reth_trie_common::proof::{DecodedProofNodes, ProofRetainer};
+use reth_trie_common::proof::{DecodedProofNodes, ProofRetainer, PrefixProofRetainer};
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
 use std::sync::{mpsc::Receiver, Arc};
 use tracing::debug;
@@ -226,7 +226,7 @@ where
         .with_deletions_retained(true);
 
         // Create a hash builder to rebuild the root node since it is not available in the database.
-        let retainer: ProofRetainer = targets.keys().map(Nibbles::unpack).collect();
+        let retainer: PrefixProofRetainer = targets.keys().map(Nibbles::unpack).collect();
         let mut hash_builder = HashBuilder::default()
             .with_proof_retainer(retainer)
             .with_updates(self.collect_branch_node_masks);

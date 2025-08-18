@@ -492,7 +492,7 @@ where
             self.chain_spec(),
             StaticFileProvider::read_write(self.data_dir().static_files())?,
         )
-        .with_trie_cache(ExternalTrieStoreHandle::new(Arc::new(DynamoDBExternalTrieStoreHandle::new(tx))))
+        // .with_trie_cache(ExternalTrieStoreHandle::new(Arc::new(DynamoDBExternalTrieStoreHandle::new(tx))))
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 
