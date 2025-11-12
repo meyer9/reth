@@ -1394,10 +1394,8 @@ mod tests {
         Ok(())
     }
 
-    /// Test that demonstrates the deadlock issue when ExEx delays consumption.
-    ///
-    /// With channel capacity=1 and manager buffer capacity=10, we can only deliver
-    /// ~11 notifications before deadlock occurs.
+    /// Test that demonstrates an issue where ExEx manager can get stuck if it doesn't consume
+    /// notifications fast enough.
     #[tokio::test]
     async fn test_exex_async_deadlock_issue() {
         // Small buffer capacity to demonstrate issue faster
@@ -1474,7 +1472,6 @@ mod tests {
             }
         });
 
-        // Now start consuming - THIS IS WHERE THE DEADLOCK MANIFESTS
         let mut received_count = 0;
         let timeout_per_notification = tokio::time::Duration::from_millis(2000);
 
@@ -1491,7 +1488,7 @@ mod tests {
                 Ok(None) => {
                     break;
                 }
-                Err(e) => {
+                Err(_) => {
                     break;
                 }
             }
