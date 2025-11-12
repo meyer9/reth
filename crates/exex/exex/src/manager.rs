@@ -1399,7 +1399,7 @@ mod tests {
     #[tokio::test]
     async fn test_exex_async_deadlock_issue() {
         // Small buffer capacity to demonstrate issue faster
-        const MAX_CAPACITY: usize = 10;
+        const MAX_CAPACITY: usize = 100;
 
         reth_tracing::init_test_tracing();
 
