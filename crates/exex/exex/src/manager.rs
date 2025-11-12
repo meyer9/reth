@@ -1399,7 +1399,7 @@ mod tests {
     #[tokio::test]
     async fn test_exex_async_deadlock_issue() {
         // Small buffer capacity to demonstrate issue faster
-        const MAX_CAPACITY: usize = 100;
+        const MAX_CAPACITY: usize = 512;
 
         reth_tracing::init_test_tracing();
 
@@ -1410,7 +1410,7 @@ mod tests {
         init_genesis(&provider_factory).unwrap();
         let provider = BlockchainProvider::new(provider_factory.clone()).unwrap();
 
-        let (exex_handle, _event_tx, mut notifications) = ExExHandle::new(
+        let (exex_handle, event_tx, mut notifications) = ExExHandle::new(
             "test_exex".to_string(),
             Default::default(),
             provider.clone(),
@@ -1433,28 +1433,12 @@ mod tests {
             let _ = exex_manager.await;
         });
 
-        // Send more notifications than buffer+channel capacity
-        let total_to_send = 5;
-        for i in 0..total_to_send {
-            let mut block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            block.set_hash(B256::new(hash_bytes));
-            block.set_block_number(i as u64 + 1);
-
-            let notification = ExExNotification::ChainCommitted {
-                new: Arc::new(Chain::new(vec![block], Default::default(), Default::default())),
-            };
-
-            manager_handle.send(ExExNotificationSource::BlockchainTree, notification).unwrap();
-        }
+        let (all_sent_tx, all_sent_rx) = tokio::sync::oneshot::channel();
 
         // in 1 second, send more notifications
         tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-            let second_batch_start = total_to_send;
-            let second_batch_size = 10;
+            let second_batch_start = 0;
+            let second_batch_size = MAX_CAPACITY;
 
             for i in 0..second_batch_size {
                 let mut block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
@@ -1470,17 +1454,25 @@ mod tests {
 
                 manager_handle.send(ExExNotificationSource::BlockchainTree, notification).unwrap();
             }
+
+            all_sent_tx.send(()).unwrap();
         });
+
+        all_sent_rx.await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         let mut received_count = 0;
         let timeout_per_notification = tokio::time::Duration::from_millis(2000);
 
         // Try to consume initial batch
-        for i in 0..total_to_send {
+        for i in 0..MAX_CAPACITY {
             match tokio::time::timeout(timeout_per_notification, notifications.next()).await {
                 Ok(Some(Ok(notif))) => {
-                    println!("received: {}", notif.committed_chain().unwrap().tip().number());
+                    let block = notif.committed_chain().unwrap().tip().clone();
+                    println!("received: {}", block.number());
                     received_count += 1;
+                    event_tx.send(ExExEvent::FinishedHeight(block.num_hash())).unwrap();
                 }
                 Ok(Some(Err(e))) => {
                     panic!("Error at notification {}: {e:?}", i);
