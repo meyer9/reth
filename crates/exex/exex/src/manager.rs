@@ -1399,7 +1399,8 @@ mod tests {
     #[tokio::test]
     async fn test_exex_async_deadlock_issue() {
         // Small buffer capacity to demonstrate issue faster
-        const MAX_CAPACITY: usize = 512;
+        const MAX_CAPACITY: usize = 1024;
+        const NUM_TO_SEND: usize = MAX_CAPACITY;
 
         reth_tracing::init_test_tracing();
 
@@ -1438,7 +1439,7 @@ mod tests {
         // in 1 second, send more notifications
         tokio::spawn(async move {
             let second_batch_start = 0;
-            let second_batch_size = MAX_CAPACITY;
+            let second_batch_size = NUM_TO_SEND;
 
             for i in 0..second_batch_size {
                 let mut block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
@@ -1466,7 +1467,7 @@ mod tests {
         let timeout_per_notification = tokio::time::Duration::from_millis(2000);
 
         // Try to consume initial batch
-        for i in 0..MAX_CAPACITY {
+        for i in 0..NUM_TO_SEND {
             match tokio::time::timeout(timeout_per_notification, notifications.next()).await {
                 Ok(Some(Ok(notif))) => {
                     let block = notif.committed_chain().unwrap().tip().clone();
