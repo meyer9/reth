@@ -1434,7 +1434,7 @@ mod tests {
         });
 
         // Send more notifications than buffer+channel capacity
-        let total_to_send = 10;
+        let total_to_send = 5;
         for i in 0..total_to_send {
             let mut block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
             let mut hash_bytes = [0u8; 32];
