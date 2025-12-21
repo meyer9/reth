@@ -181,7 +181,7 @@ impl ConfigureEngineEvm<ExecutionData> for CustomEvmConfig {
 
 pub struct CustomBlockExecutor<'a, Evm> {
     /// Inner Ethereum execution strategy.
-    inner: EthBlockExecutor<'a, Evm, &'a Arc<ChainSpec>, &'a RethReceiptBuilder>,
+    inner: EthBlockExecutor<'a, Evm, &'a Arc<ChainSpec>, &'a RethReceiptBuilder, EvmState>,
 }
 
 impl<'db, DB, E> BlockExecutor for CustomBlockExecutor<'_, E>

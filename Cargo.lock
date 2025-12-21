@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "alloy-evm"
 version = "0.23.3"
-source = "git+https://github.com/meyer9/evm?branch=meyer9%2Frelease-v0.23.3-generic-evm-state#f55f18798b5c8d2a73fb2c064bcba1553e09fe33"
+source = "git+https://github.com/meyer9/evm?branch=meyer9%2Frelease-v0.23.3-generic-evm-state#19435dfb0f7aa7f0b9c5bf58ac33c16e005e936e"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -379,7 +379,7 @@ dependencies = [
 [[package]]
 name = "alloy-op-evm"
 version = "0.23.3"
-source = "git+https://github.com/meyer9/evm?branch=meyer9%2Frelease-v0.23.3-generic-evm-state#f55f18798b5c8d2a73fb2c064bcba1553e09fe33"
+source = "git+https://github.com/meyer9/evm?branch=meyer9%2Frelease-v0.23.3-generic-evm-state#19435dfb0f7aa7f0b9c5bf58ac33c16e005e936e"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

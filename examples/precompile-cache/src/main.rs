@@ -5,7 +5,7 @@
 use alloy_evm::{
     eth::EthEvmContext,
     precompiles::{DynPrecompile, Precompile, PrecompileInput, PrecompilesMap},
-    revm::{handler::EthPrecompiles, precompile::PrecompileId},
+    revm::{handler::EthPrecompiles, precompile::PrecompileId, state::EvmState},
     Evm, EvmFactory,
 };
 use alloy_genesis::Genesis;
@@ -71,6 +71,7 @@ impl EvmFactory for MyEvmFactory {
     type Spec = SpecId;
     type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
+    type State = EvmState;
 
     fn create_evm<DB: Database>(&self, db: DB, input: EvmEnv) -> Self::Evm<DB, NoOpInspector> {
         let new_cache = self.precompile_cache.clone();

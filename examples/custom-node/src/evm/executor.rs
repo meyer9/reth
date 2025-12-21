@@ -21,7 +21,7 @@ use revm::{context::result::ResultAndState, database::State, state::EvmState};
 use std::sync::Arc;
 
 pub struct CustomBlockExecutor<Evm> {
-    inner: OpBlockExecutor<Evm, OpRethReceiptBuilder, Arc<OpChainSpec>>,
+    inner: OpBlockExecutor<Evm, OpRethReceiptBuilder, Arc<OpChainSpec>, EvmState>,
 }
 
 impl<'db, DB, E> BlockExecutor for CustomBlockExecutor<E>

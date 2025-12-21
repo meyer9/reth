@@ -3,13 +3,10 @@
 #![warn(unused_crate_dependencies)]
 
 use alloy_evm::{
-    eth::EthEvmContext,
-    precompiles::PrecompilesMap,
-    revm::{
+    EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap, revm::{
         handler::EthPrecompiles,
-        precompile::{Precompile, PrecompileId},
-    },
-    EvmFactory,
+        precompile::{Precompile, PrecompileId}, state::EvmState,
+    }
 };
 use alloy_genesis::Genesis;
 use alloy_primitives::{address, Bytes};
@@ -56,6 +53,7 @@ impl EvmFactory for MyEvmFactory {
     type Spec = SpecId;
     type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
+    type State = EvmState;
 
     fn create_evm<DB: Database>(&self, db: DB, input: EvmEnv) -> Self::Evm<DB, NoOpInspector> {
         let spec = input.cfg_env.spec;

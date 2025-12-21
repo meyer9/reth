@@ -42,7 +42,7 @@ use reth_storage_errors::any::AnyError;
 use revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
-    primitives::hardfork::SpecId,
+    primitives::hardfork::SpecId, state::EvmState,
 };
 
 mod config;
@@ -134,6 +134,7 @@ where
             Spec = SpecId,
             BlockEnv = BlockEnv,
             Precompiles = PrecompilesMap,
+            State = EvmState,
         > + Clone
         + Debug
         + Send
@@ -220,6 +221,7 @@ where
             Spec = SpecId,
             BlockEnv = BlockEnv,
             Precompiles = PrecompilesMap,
+            State = EvmState,
         > + Clone
         + Debug
         + Send

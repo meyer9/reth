@@ -19,12 +19,7 @@ use reth_optimism_node::{args::RollupArgs, OpEvmConfig, OpExecutorBuilder, OpNod
 use reth_optimism_primitives::OpPrimitives;
 use reth_provider::providers::BlockchainProvider;
 use revm::{
-    context::{BlockEnv, Cfg, ContextTr, TxEnv},
-    context_interface::result::EVMError,
-    inspector::NoOpInspector,
-    interpreter::interpreter::EthInterpreter,
-    precompile::{Precompile, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles},
-    Inspector,
+    Inspector, context::{BlockEnv, Cfg, ContextTr, TxEnv}, context_interface::result::EVMError, inspector::NoOpInspector, interpreter::interpreter::EthInterpreter, precompile::{Precompile, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles}, state::EvmState
 };
 use std::sync::OnceLock;
 
@@ -96,6 +91,7 @@ fn test_setup_custom_precompiles() {
         type Spec = OpSpecId;
         type BlockEnv = BlockEnv;
         type Precompiles = PrecompilesMap;
+        type State = EvmState;
 
         fn create_evm<DB: Database>(
             &self,

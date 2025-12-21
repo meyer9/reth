@@ -107,6 +107,7 @@ impl EvmFactory for CustomEvmFactory {
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
+    type State = EvmState;
 
     fn create_evm<DB: Database>(
         &self,
