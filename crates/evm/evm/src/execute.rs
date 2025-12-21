@@ -23,7 +23,7 @@ pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
 use revm::{
     context::result::ExecutionResult,
-    database::{states::bundle_state::BundleRetention, BundleState, State},
+    database::{BundleState, State, states::bundle_state::BundleRetention}, state::EvmState,
 };
 
 /// A type that knows how to execute a block. It is assumed to operate on a
@@ -48,7 +48,7 @@ pub trait Executor<DB: Database>: Sized {
         state_hook: F,
     ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
     where
-        F: OnStateHook + 'static;
+        F: OnStateHook<EvmState> + 'static;
 
     /// Consumes the type and executes the block.
     ///
@@ -132,7 +132,7 @@ pub trait Executor<DB: Database>: Sized {
         state_hook: F,
     ) -> Result<BlockExecutionOutput<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
     where
-        F: OnStateHook + 'static,
+        F: OnStateHook<EvmState> + 'static
     {
         let result = self.execute_one_with_state_hook(block, state_hook)?;
         let mut state = self.into_state();
@@ -600,7 +600,7 @@ where
         state_hook: H,
     ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
     where
-        H: OnStateHook + 'static,
+        H: OnStateHook<EvmState> + 'static,
     {
         let result = self
             .strategy_factory
@@ -706,7 +706,7 @@ mod tests {
             _state_hook: F,
         ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
         where
-            F: OnStateHook + 'static,
+            F: OnStateHook<EvmState> + 'static,
         {
             Err(BlockExecutionError::msg("execution unavailable for tests"))
         }

@@ -5,11 +5,7 @@
 
 use alloy_eips::eip4895::Withdrawal;
 use alloy_evm::{
-    block::{BlockExecutorFactory, BlockExecutorFor, ExecutableTx},
-    eth::{EthBlockExecutionCtx, EthBlockExecutor},
-    precompiles::PrecompilesMap,
-    revm::context::{result::ResultAndState, Block as _},
-    EthEvm, EthEvmFactory,
+    EthEvm, EthEvmFactory, block::{BlockExecutorFactory, BlockExecutorFor, ExecutableTx}, eth::{EthBlockExecutionCtx, EthBlockExecutor}, precompiles::PrecompilesMap, revm::{context::{Block as _, result::ResultAndState}, state::EvmState}
 };
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
@@ -191,11 +187,12 @@ pub struct CustomBlockExecutor<'a, Evm> {
 impl<'db, DB, E> BlockExecutor for CustomBlockExecutor<'_, E>
 where
     DB: Database + 'db,
-    E: Evm<DB = &'db mut State<DB>, Tx = TxEnv>,
+    E: Evm<DB = &'db mut State<DB>, Tx = TxEnv, State = EvmState>,
 {
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
     type Evm = E;
+    type State = EvmState;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
@@ -225,7 +222,7 @@ where
         self.inner.finish()
     }
 
-    fn set_state_hook(&mut self, _hook: Option<Box<dyn OnStateHook>>) {
+    fn set_state_hook(&mut self, _hook: Option<Box<dyn OnStateHook<EvmState>>>) {
         self.inner.set_state_hook(_hook)
     }
 
@@ -249,7 +246,7 @@ sol!(
 /// [`ChainSpec`], EVM.
 pub fn apply_withdrawals_contract_call(
     withdrawals: &[Withdrawal],
-    evm: &mut impl Evm<Error: Display, DB: DatabaseCommit>,
+    evm: &mut impl Evm<Error: Display, DB: DatabaseCommit, State = EvmState>,
 ) -> Result<(), BlockExecutionError> {
     let mut state = match evm.transact_system_call(
         SYSTEM_ADDRESS,

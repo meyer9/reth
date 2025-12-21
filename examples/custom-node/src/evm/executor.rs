@@ -17,7 +17,7 @@ use alloy_evm::{
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutor};
 use reth_ethereum::evm::primitives::InspectorFor;
 use reth_op::{chainspec::OpChainSpec, node::OpRethReceiptBuilder, OpReceipt};
-use revm::{context::result::ResultAndState, database::State};
+use revm::{context::result::ResultAndState, database::State, state::EvmState};
 use std::sync::Arc;
 
 pub struct CustomBlockExecutor<Evm> {
@@ -27,11 +27,12 @@ pub struct CustomBlockExecutor<Evm> {
 impl<'db, DB, E> BlockExecutor for CustomBlockExecutor<E>
 where
     DB: Database + 'db,
-    E: Evm<DB = &'db mut State<DB>, Tx = CustomTxEnv>,
+    E: Evm<DB = &'db mut State<DB>, Tx = CustomTxEnv, State = EvmState>,
 {
     type Transaction = CustomTransaction;
     type Receipt = OpReceipt;
     type Evm = E;
+    type State = EvmState;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
@@ -66,7 +67,7 @@ where
         self.inner.finish()
     }
 
-    fn set_state_hook(&mut self, _hook: Option<Box<dyn OnStateHook>>) {
+    fn set_state_hook(&mut self, _hook: Option<Box<dyn OnStateHook<EvmState>>>) {
         self.inner.set_state_hook(_hook)
     }
 

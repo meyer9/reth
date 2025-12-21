@@ -18,9 +18,7 @@ use reth_evm::{
 use reth_execution_types::{BlockExecutionResult, ExecutionOutcome};
 use reth_primitives_traits::{BlockTy, SealedBlock, SealedHeader};
 use revm::{
-    context::result::{ExecutionResult, Output, ResultAndState, SuccessReason},
-    database::State,
-    Inspector,
+    Inspector, context::result::{ExecutionResult, Output, ResultAndState, SuccessReason}, database::State, state::EvmState
 };
 
 /// A helper type alias for mocked block executor provider.
@@ -75,7 +73,7 @@ pub struct MockExecutor<'a, DB: Database, I> {
     result: ExecutionOutcome,
     evm: EthEvm<&'a mut State<DB>, I, PrecompilesMap>,
     #[debug(skip)]
-    hook: Option<Box<dyn reth_evm::OnStateHook>>,
+    hook: Option<Box<dyn reth_evm::OnStateHook<EvmState>>>,
 }
 
 impl<'a, DB: Database, I: Inspector<EthEvmContext<&'a mut State<DB>>>> BlockExecutor
@@ -84,6 +82,7 @@ impl<'a, DB: Database, I: Inspector<EthEvmContext<&'a mut State<DB>>>> BlockExec
     type Evm = EthEvm<&'a mut State<DB>, I, PrecompilesMap>;
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
+    type State = EvmState;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         Ok(())
@@ -133,7 +132,7 @@ impl<'a, DB: Database, I: Inspector<EthEvmContext<&'a mut State<DB>>>> BlockExec
         Ok((evm, result))
     }
 
-    fn set_state_hook(&mut self, hook: Option<Box<dyn reth_evm::OnStateHook>>) {
+    fn set_state_hook(&mut self, hook: Option<Box<dyn reth_evm::OnStateHook<EvmState>>>) {
         self.hook = hook;
     }
 

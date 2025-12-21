@@ -6,6 +6,7 @@ use crate::{execute::Executor, Database, OnStateHook};
 pub use futures_util::future::Either;
 use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult};
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock};
+use revm::state::EvmState;
 
 impl<A, B, DB> Executor<DB> for Either<A, B>
 where
@@ -33,7 +34,7 @@ where
         state_hook: F,
     ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
     where
-        F: OnStateHook + 'static,
+        F: OnStateHook<EvmState> + 'static
     {
         match self {
             Self::Left(a) => a.execute_one_with_state_hook(block, state_hook),

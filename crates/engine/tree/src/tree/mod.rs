@@ -209,10 +209,10 @@ pub enum TreeAction {
 /// Wrapper struct that combines metrics and state hook
 struct MeteredStateHook {
     metrics: reth_evm::metrics::ExecutorMetrics,
-    inner_hook: Box<dyn OnStateHook>,
+    inner_hook: Box<dyn OnStateHook<EvmState>>,
 }
 
-impl OnStateHook for MeteredStateHook {
+impl OnStateHook<EvmState> for MeteredStateHook {
     fn on_state(&mut self, source: StateChangeSource, state: &EvmState) {
         // Update the metrics for the number of accounts, storage slots and bytecodes loaded
         let accounts = state.keys().len();

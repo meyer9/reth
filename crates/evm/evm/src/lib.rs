@@ -327,7 +327,8 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         &'a self,
         db: &'a mut State<DB>,
         block: &'a SealedBlock<<Self::Primitives as NodePrimitives>::Block>,
-    ) -> Result<impl BlockExecutorFor<'a, Self::BlockExecutorFactory, DB>, Self::Error> {
+    ) -> Result<impl BlockExecutorFor<'a, Self::BlockExecutorFactory, DB>, Self::Error>
+    {
         let evm = self.evm_for_block(db, block.header())?;
         let ctx = self.context_for_block(block)?;
         Ok(self.create_executor(evm, ctx))
@@ -359,7 +360,7 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
     >
     where
         DB: Database,
-        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+        I: InspectorFor<Self, &'a mut State<DB>> + 'a
     {
         BasicBlockBuilder {
             executor: self.create_executor(evm, ctx.clone()),
@@ -410,7 +411,8 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
             Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, DB>,
         >,
         Self::Error,
-    > {
+    >
+    {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         let evm = self.evm_with_env(db, evm_env);
         let ctx = self.context_for_next_block(parent, attributes)?;
@@ -441,7 +443,8 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
     fn executor<DB: Database>(
         &self,
         db: DB,
-    ) -> impl Executor<DB, Primitives = Self::Primitives, Error = BlockExecutionError> {
+    ) -> impl Executor<DB, Primitives = Self::Primitives, Error = BlockExecutionError>
+    {
         BasicBlockExecutor::new(self, db)
     }
 
@@ -450,7 +453,8 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
     fn batch_executor<DB: Database>(
         &self,
         db: DB,
-    ) -> impl Executor<DB, Primitives = Self::Primitives, Error = BlockExecutionError> {
+    ) -> impl Executor<DB, Primitives = Self::Primitives, Error = BlockExecutionError>
+    {
         BasicBlockExecutor::new(self, db)
     }
 }

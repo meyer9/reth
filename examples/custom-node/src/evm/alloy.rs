@@ -12,7 +12,7 @@ use reth_ethereum::evm::revm::{
     interpreter::InterpreterResult,
     Context, Inspector, Journal,
 };
-use revm::{context_interface::result::EVMError, inspector::NoOpInspector};
+use revm::{context_interface::result::EVMError, inspector::NoOpInspector, state::EvmState};
 use std::error::Error;
 
 /// EVM context contains data that EVM needs for execution of [`CustomTxEnv`].
@@ -43,6 +43,7 @@ where
     type BlockEnv = BlockEnv;
     type Precompiles = P;
     type Inspector = I;
+    type State = EvmState;
 
     fn block(&self) -> &BlockEnv {
         self.inner.block()

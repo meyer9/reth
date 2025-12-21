@@ -4,6 +4,7 @@ use alloy_evm::{
     block::{BlockExecutor, ExecutableTx},
     Evm,
 };
+use revm::state::EvmState;
 use core::borrow::BorrowMut;
 use reth_errors::BlockExecutionError;
 use reth_evm::{metrics::ExecutorMetrics, OnStateHook};
@@ -61,11 +62,11 @@ impl EngineApiMetrics {
         &self,
         executor: E,
         transactions: impl Iterator<Item = Result<impl ExecutableTx<E>, BlockExecutionError>>,
-        state_hook: Box<dyn OnStateHook>,
+        state_hook: Box<dyn OnStateHook<EvmState>>,
     ) -> Result<BlockExecutionOutput<E::Receipt>, BlockExecutionError>
     where
         DB: alloy_evm::Database,
-        E: BlockExecutor<Evm: Evm<DB: BorrowMut<State<DB>>>, Transaction: SignedTransaction>,
+        E: BlockExecutor<Evm: Evm<DB: BorrowMut<State<DB>>>, Transaction: SignedTransaction, State = EvmState>,
     {
         // clone here is cheap, all the metrics are Option<Arc<_>>. additionally
         // they are globally registered so that the data recorded in the hook will
@@ -236,7 +237,7 @@ mod tests {
     /// A simple mock executor for testing that doesn't require complex EVM setup
     struct MockExecutor {
         state: EvmState,
-        hook: Option<Box<dyn OnStateHook>>,
+        hook: Option<Box<dyn OnStateHook<EvmState>>>,
     }
 
     impl MockExecutor {
@@ -252,6 +253,7 @@ mod tests {
         type Transaction = TransactionSigned;
         type Receipt = Receipt;
         type Evm = MockEvm;
+        type State = EvmState;
 
         fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
             Ok(())
@@ -319,7 +321,7 @@ mod tests {
             ))
         }
 
-        fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
+        fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook<EvmState>>>) {
             self.hook = hook;
         }
 
@@ -337,7 +339,7 @@ mod tests {
         sender: mpsc::Sender<i32>,
     }
 
-    impl OnStateHook for ChannelStateHook {
+    impl OnStateHook<EvmState> for ChannelStateHook {
         fn on_state(&mut self, _source: StateChangeSource, _state: &EvmState) {
             let _ = self.sender.send(self.output);
         }

@@ -490,7 +490,7 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
     /// Returns a state hook to be used to send state updates to this task.
     ///
     /// If a multiproof task is spawned the hook will notify it about new states.
-    pub fn state_hook(&self) -> impl OnStateHook {
+    pub fn state_hook(&self) -> impl OnStateHook<EvmState> {
         // convert the channel into a `StateHookSender` that emits an event on drop
         let to_multi_proof = self.to_multi_proof.clone().map(StateHookSender::new);
 

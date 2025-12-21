@@ -21,7 +21,7 @@ use reth_rpc_eth_types::{
 use reth_storage_api::{ProviderBlock, ProviderTx};
 use revm::{context::Block, context_interface::result::ResultAndState, DatabaseCommit};
 use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 
 /// Executes CPU heavy tasks.
 pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> {
@@ -442,7 +442,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> {
 
         // apply relevant system calls
         let mut evm = self.evm_config().evm_with_env(db, evm_env.clone());
-        system_caller.apply_pre_execution_changes(block.header(), &mut evm).map_err(|err| {
+        system_caller.apply_pre_execution_changes::<_, Infallible>(block.header(), &mut evm).map_err(|err| {
             EthApiError::EvmCustom(format!("failed to apply 4788 system call {err}"))
         })?;
 
