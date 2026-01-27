@@ -1495,4 +1495,86 @@ mod test {
         assert_eq!(1, verified_payload.len());
         assert!(verified_payload.contains(&signed_tx_1));
     }
+
+    /// Test that verifies `hashes_pending_fetch` stays in sync with
+    /// `hashes_fetch_inflight_and_pending_fetch` when the latter evicts entries.
+    ///
+    /// The `hashes_fetch_inflight_and_pending_fetch` LruMap has a bounded capacity. When new
+    /// hashes are added via `get_or_insert` and the map is full, old entries are silently
+    /// evicted. If the corresponding entries in `hashes_pending_fetch` are not also removed,
+    /// the caches become desynchronized, causing:
+    ///
+    /// 1. Orphaned hashes in `hashes_pending_fetch` with no metadata (fallback_peers, retries)
+    /// 2. `get_idle_peer_for()` returns `None` for orphaned hashes (no metadata to check)
+    /// 3. The fetch loop wastes its search budget on unfetchable hashes
+    /// 4. The `hashes_inflight_transaction_requests` metric can become negative
+    /// 5. The pending fetch queue never drains, even when peers are idle
+    #[test]
+    fn test_pending_fetch_cache_consistency_on_eviction() {
+        reth_tracing::init_test_tracing();
+
+        // Create a fetcher with small capacity to trigger eviction
+        let config = TransactionFetcherConfig {
+            max_inflight_requests: 2,
+            max_inflight_requests_per_peer: 1,
+            soft_limit_byte_size_pooled_transactions_response: 2 * 1024 * 1024,
+            soft_limit_byte_size_pooled_transactions_response_on_pack_request: 128 * 1024,
+            max_capacity_cache_txns_pending_fetch: 5,
+        };
+        let tx_fetcher =
+            &mut TransactionFetcher::<EthNetworkPrimitives>::with_transaction_fetcher_config(
+                &config,
+            );
+
+        let peer_id = PeerId::random();
+
+        // Buffer 5 hashes (adds to both caches)
+        let initial_hashes: Vec<B256> =
+            (0..5).map(|i| B256::from_slice(&[i as u8; 32])).collect();
+        for hash in &initial_hashes {
+            buffer_hash_to_tx_fetcher(tx_fetcher, *hash, peer_id, 0, None);
+        }
+
+        assert_eq!(tx_fetcher.hashes_pending_fetch.len(), 5);
+        assert_eq!(tx_fetcher.hashes_fetch_inflight_and_pending_fetch.len(), 5);
+
+        // Total capacity is max_inflight_requests + max_capacity_cache_txns_pending_fetch = 7
+        // Adding 5 more hashes will evict 3 of the original hashes from the tracking map
+        let new_hashes: Vec<B256> =
+            (10..15).map(|i| B256::from_slice(&[i as u8; 32])).collect();
+
+        for hash in &new_hashes {
+            tx_fetcher.hashes_fetch_inflight_and_pending_fetch.get_or_insert(*hash, || {
+                TxFetchMetadata::new(0, LruCache::new(DEFAULT_MAX_COUNT_FALLBACK_PEERS as u32), None)
+            });
+        }
+
+        // Count orphaned hashes: in pending_fetch but not in tracking map
+        let orphaned_count = tx_fetcher
+            .hashes_pending_fetch
+            .iter()
+            .filter(|hash| {
+                tx_fetcher.hashes_fetch_inflight_and_pending_fetch.peek(*hash).is_none()
+            })
+            .count();
+
+        // Verify invariant: all hashes in pending_fetch must have metadata in tracking map
+        assert_eq!(
+            orphaned_count, 0,
+            "Found {} orphaned hashes in pending_fetch without metadata in tracking map. \
+             These hashes cannot be fetched and will block the fetch queue.",
+            orphaned_count
+        );
+
+        // Verify metric invariant: inflight count should never be negative
+        let pending = tx_fetcher.hashes_pending_fetch.len() as i64;
+        let total = tx_fetcher.hashes_fetch_inflight_and_pending_fetch.len() as i64;
+        assert!(
+            total >= pending,
+            "hashes_inflight_transaction_requests metric would be negative: {} - {} = {}",
+            total,
+            pending,
+            total - pending
+        );
+    }
 }
