@@ -59,27 +59,27 @@ impl EngineApiMetrics {
     }
 
     /// Returns a reference to the executor metrics for use in state hooks.
-    pub(crate) const fn executor_metrics(&self) -> &ExecutorMetrics {
+    pub const fn executor_metrics(&self) -> &ExecutorMetrics {
         &self.executor
     }
 
     /// Records the duration of block pre-execution changes (e.g., beacon root update).
-    pub(crate) fn record_pre_execution(&self, elapsed: Duration) {
+    pub fn record_pre_execution(&self, elapsed: Duration) {
         self.executor.pre_execution_histogram.record(elapsed);
     }
 
     /// Records the duration of block post-execution changes (e.g., finalization).
-    pub(crate) fn record_post_execution(&self, elapsed: Duration) {
+    pub fn record_post_execution(&self, elapsed: Duration) {
         self.executor.post_execution_histogram.record(elapsed);
     }
 
     /// Records the time spent waiting for the next transaction from the iterator.
-    pub(crate) fn record_transaction_wait(&self, elapsed: Duration) {
+    pub fn record_transaction_wait(&self, elapsed: Duration) {
         self.executor.transaction_wait_histogram.record(elapsed);
     }
 
     /// Records the duration of a single transaction execution.
-    pub(crate) fn record_transaction_execution(&self, elapsed: Duration) {
+    pub fn record_transaction_execution(&self, elapsed: Duration) {
         self.executor.transaction_execution_histogram.record(elapsed);
     }
 }
