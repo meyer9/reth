@@ -625,12 +625,7 @@ impl ExecutionCache {
     }
 
     /// Insert storage value into cache.
-    pub fn insert_storage(
-        &self,
-        address: Address,
-        key: StorageKey,
-        value: Option<StorageValue>,
-    ) {
+    pub fn insert_storage(&self, address: Address, key: StorageKey, value: Option<StorageValue>) {
         self.storage_cache.insert((address, key), value.unwrap_or_default());
     }
 
