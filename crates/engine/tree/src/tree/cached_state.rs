@@ -767,7 +767,7 @@ impl ExecutionCache {
 /// A saved cache that has been used for executing a specific block, which has been updated for its
 /// execution.
 #[derive(Debug, Clone)]
-pub(crate) struct SavedCache {
+pub struct SavedCache {
     /// The hash of the block these caches were used to execute.
     hash: B256,
 
