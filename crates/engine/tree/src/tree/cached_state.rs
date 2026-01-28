@@ -788,43 +788,43 @@ pub struct SavedCache {
 
 impl SavedCache {
     /// Creates a new instance with the internals
-    pub(super) fn new(hash: B256, caches: ExecutionCache, metrics: CachedStateMetrics) -> Self {
+    pub fn new(hash: B256, caches: ExecutionCache, metrics: CachedStateMetrics) -> Self {
         Self { hash, caches, metrics, usage_guard: Arc::new(()), disable_cache_metrics: false }
     }
 
     /// Sets whether to disable cache metrics recording.
-    pub(super) const fn with_disable_cache_metrics(mut self, disable: bool) -> Self {
+    pub const fn with_disable_cache_metrics(mut self, disable: bool) -> Self {
         self.disable_cache_metrics = disable;
         self
     }
 
     /// Returns the hash for this cache
-    pub(crate) const fn executed_block_hash(&self) -> B256 {
+    pub const fn executed_block_hash(&self) -> B256 {
         self.hash
     }
 
     /// Splits the cache into its caches, metrics, and `disable_cache_metrics` flag, consuming it.
-    pub(crate) fn split(self) -> (ExecutionCache, CachedStateMetrics, bool) {
+    pub fn split(self) -> (ExecutionCache, CachedStateMetrics, bool) {
         (self.caches, self.metrics, self.disable_cache_metrics)
     }
 
     /// Returns true if the cache is available for use (no other tasks are currently using it).
-    pub(crate) fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         Arc::strong_count(&self.usage_guard) == 1
     }
 
     /// Returns the current strong count of the usage guard.
-    pub(crate) fn usage_count(&self) -> usize {
+    pub fn usage_count(&self) -> usize {
         Arc::strong_count(&self.usage_guard)
     }
 
     /// Returns the [`ExecutionCache`] belonging to the tracked hash.
-    pub(crate) const fn cache(&self) -> &ExecutionCache {
+    pub const fn cache(&self) -> &ExecutionCache {
         &self.caches
     }
 
     /// Returns the metrics associated with this cache.
-    pub(crate) const fn metrics(&self) -> &CachedStateMetrics {
+    pub const fn metrics(&self) -> &CachedStateMetrics {
         &self.metrics
     }
 

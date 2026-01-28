@@ -55,7 +55,7 @@ pub mod error;
 pub mod instrumented_state;
 mod invalid_headers;
 mod metrics;
-mod payload_processor;
+pub mod payload_processor;
 pub mod payload_validator;
 mod persistence_state;
 pub mod precompile_cache;
@@ -66,7 +66,7 @@ mod trie_updates;
 
 use crate::tree::error::AdvancePersistenceError;
 pub use block_buffer::BlockBuffer;
-pub use cached_state::{CachedStateMetrics, CachedStateProvider, ExecutionCache};
+pub use cached_state::{CachedStateMetrics, CachedStateProvider, ExecutionCache, SavedCache};
 pub use invalid_headers::InvalidHeaderCache;
 pub use metrics::EngineApiMetrics;
 pub use payload_processor::*;
