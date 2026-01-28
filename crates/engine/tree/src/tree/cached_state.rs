@@ -658,7 +658,8 @@ impl ExecutionCache {
     ///
     /// Returns an error if the state updates are inconsistent and should be discarded.
     #[instrument(level = "debug", target = "engine::caching", skip_all)]
-    pub(crate) fn insert_state(&self, state_updates: &BundleState) -> Result<(), ()> {
+    #[expect(clippy::result_unit_err)]
+    pub fn insert_state(&self, state_updates: &BundleState) -> Result<(), ()> {
         let _enter =
             debug_span!(target: "engine::tree", "contracts", len = state_updates.contracts.len())
                 .entered();
