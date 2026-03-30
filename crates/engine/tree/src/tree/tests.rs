@@ -306,14 +306,14 @@ impl TestHarness {
         let (tx, rx) = oneshot::channel();
         let _ = self
             .tree
-            .on_engine_message(FromEngine::Request(
+            .on_engine_message(FromEngine::Request(Traced::new(
                 BeaconEngineMessage::ForkchoiceUpdated {
                     state: fcu_state,
                     payload_attrs: None,
                     tx,
                 }
                 .into(),
-            ))
+            )))
             .unwrap();
 
         let response = rx.await.unwrap().unwrap().await.unwrap();
@@ -601,7 +601,7 @@ async fn test_engine_request_during_backfill() {
     let (tx, rx) = oneshot::channel();
     let _ = test_harness
         .tree
-        .on_engine_message(FromEngine::Request(
+        .on_engine_message(FromEngine::Request(Traced::new(
             BeaconEngineMessage::ForkchoiceUpdated {
                 state: ForkchoiceState {
                     head_block_hash: B256::random(),
@@ -612,7 +612,7 @@ async fn test_engine_request_during_backfill() {
                 tx,
             }
             .into(),
-        ))
+        )))
         .unwrap();
 
     let resp = rx.await.unwrap().unwrap().await.unwrap();
@@ -681,7 +681,7 @@ async fn test_holesky_payload() {
     let (tx, rx) = oneshot::channel();
     let _ = test_harness
         .tree
-        .on_engine_message(FromEngine::Request(
+        .on_engine_message(FromEngine::Request(Traced::new(
             BeaconEngineMessage::NewPayload {
                 payload: ExecutionData {
                     payload: payload.clone().into(),
@@ -690,7 +690,7 @@ async fn test_holesky_payload() {
                 tx,
             }
             .into(),
-        ))
+        )))
         .unwrap();
 
     let resp = rx.await.unwrap().unwrap();
@@ -715,7 +715,7 @@ fn test_backpressure_waits_for_persistence_before_reading_incoming() {
     let (tx, mut rx) = oneshot::channel();
     test_harness
         .to_tree_tx
-        .send(FromEngine::Request(
+        .send(FromEngine::Request(Traced::new(
             BeaconEngineMessage::ForkchoiceUpdated {
                 state: ForkchoiceState {
                     head_block_hash: B256::random(),
@@ -726,7 +726,7 @@ fn test_backpressure_waits_for_persistence_before_reading_incoming() {
                 tx,
             }
             .into(),
-        ))
+        )))
         .unwrap();
     test_harness.to_tree_tx.send(FromEngine::DownloadedBlocks(vec![])).unwrap();
     assert_eq!(test_harness.tree.incoming.len(), 2);
@@ -1154,7 +1154,7 @@ async fn test_fcu_with_canonical_ancestor_updates_latest_block() {
     let (tx, rx) = oneshot::channel();
     let _ = test_harness
         .tree
-        .on_engine_message(FromEngine::Request(
+        .on_engine_message(FromEngine::Request(Traced::new(
             BeaconEngineMessage::ForkchoiceUpdated {
                 state: ForkchoiceState {
                     head_block_hash: ancestor_block.hash(),
@@ -1165,7 +1165,7 @@ async fn test_fcu_with_canonical_ancestor_updates_latest_block() {
                 tx,
             }
             .into(),
-        ))
+        )))
         .unwrap();
 
     // Verify FCU succeeds
