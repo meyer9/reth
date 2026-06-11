@@ -1182,4 +1182,129 @@ mod test {
             Err(Error::NetworkStackIdNotConfigured)
         ));
     }
+
+    #[test]
+    fn test_tcp_decay_probability_zero_elapsed() {
+        // No time has passed → no eviction probability.
+        let p = tcp_decay_probability(Duration::ZERO, Duration::from_secs(3600));
+        assert_eq!(p, 0.0);
+    }
+
+    #[test]
+    fn test_tcp_decay_probability_at_tau() {
+        // After exactly one time-constant the probability should be 1 − 1/e ≈ 0.632.
+        let tau = Duration::from_secs(3600);
+        let p = tcp_decay_probability(tau, tau);
+        let expected = 1.0_f64 - std::f64::consts::E.recip();
+        assert!((p - expected).abs() < 1e-9, "p={p} expected≈{expected}");
+    }
+
+    #[test]
+    fn test_tcp_decay_probability_large_elapsed_approaches_one() {
+        // After 10× tau the probability should be very close to 1.
+        let tau = Duration::from_secs(3600);
+        let p = tcp_decay_probability(tau * 10, tau);
+        assert!(p > 0.9999, "expected p≈1 for 10×tau, got {p}");
+    }
+
+    #[test]
+    fn test_tcp_decay_probability_monotone() {
+        // Verify that probability increases strictly with elapsed time.
+        let tau = Duration::from_secs(3600);
+        let p1 = tcp_decay_probability(Duration::from_secs(1800), tau); // 0.5×tau
+        let p2 = tcp_decay_probability(Duration::from_secs(3600), tau); // 1×tau
+        let p3 = tcp_decay_probability(Duration::from_secs(7200), tau); // 2×tau
+        assert!(p1 < p2, "p(0.5τ) < p(1τ) violated");
+        assert!(p2 < p3, "p(1τ) < p(2τ) violated");
+    }
+
+    #[test]
+    fn test_on_tcp_established_sets_last_success() {
+        let sk = CombinedKey::generate_secp256k1();
+        let enr = Enr::builder().tcp4(30303_u16).build(&sk).unwrap();
+        let peer_id = enr::enr_to_discv4_id(&enr).unwrap();
+        let node_id = enr.node_id();
+
+        let discv5 = discv5_noop();
+
+        // State map starts empty.
+        assert!(discv5.tcp_states.lock().unwrap().is_empty());
+
+        discv5.on_tcp_established(peer_id);
+
+        let states = discv5.tcp_states.lock().unwrap();
+        let state = states.get(&node_id).expect("state should be inserted");
+        assert!(state.last_tcp_success.is_some(), "last_tcp_success should be set");
+    }
+
+    #[test]
+    fn test_on_tcp_established_updates_existing_entry() {
+        let sk = CombinedKey::generate_secp256k1();
+        let enr = Enr::builder().tcp4(30303_u16).build(&sk).unwrap();
+        let peer_id = enr::enr_to_discv4_id(&enr).unwrap();
+        let node_id = enr.node_id();
+
+        let discv5 = discv5_noop();
+
+        // Pre-seed an entry with no TCP success (as on_discovered_peer would).
+        discv5.tcp_states.lock().unwrap().insert(
+            node_id,
+            NodeTcpState { first_seen: Instant::now(), last_tcp_success: None },
+        );
+
+        discv5.on_tcp_established(peer_id);
+
+        let states = discv5.tcp_states.lock().unwrap();
+        let state = states.get(&node_id).unwrap();
+        assert!(state.last_tcp_success.is_some(), "existing entry should be updated");
+    }
+
+    #[test]
+    fn test_on_discovered_peer_inserts_tcp_state() {
+        let sk = CombinedKey::generate_secp256k1();
+        let socket: SocketAddr = "104.28.44.25:9000".parse().unwrap();
+        let enr = Enr::builder().tcp4(30303_u16).build(&sk).unwrap();
+        let node_id = enr.node_id();
+
+        let discv5 = discv5_noop();
+
+        let result = discv5.on_discovered_peer(&enr, socket);
+
+        // Peer should be surfaced as a dial candidate.
+        assert!(result.is_some(), "expected Some(DiscoveredPeer)");
+
+        // tcp_states should now contain an entry with no TCP success yet.
+        let states = discv5.tcp_states.lock().unwrap();
+        let state = states.get(&node_id).expect("state should be inserted on discovery");
+        assert!(
+            state.last_tcp_success.is_none(),
+            "freshly discovered peer should not yet have TCP success"
+        );
+    }
+
+    #[test]
+    fn test_on_discovered_peer_does_not_overwrite_existing_state() {
+        let sk = CombinedKey::generate_secp256k1();
+        let socket: SocketAddr = "104.28.44.25:9000".parse().unwrap();
+        let enr = Enr::builder().tcp4(30303_u16).build(&sk).unwrap();
+        let node_id = enr.node_id();
+        let peer_id = enr::enr_to_discv4_id(&enr).unwrap();
+
+        let discv5 = discv5_noop();
+
+        // Simulate: discovered first, then TCP connected.
+        discv5.on_discovered_peer(&enr, socket);
+        discv5.on_tcp_established(peer_id);
+
+        // Re-discover the same peer (e.g., another SessionEstablished event).
+        discv5.on_discovered_peer(&enr, socket);
+
+        // The TCP success timestamp must not have been erased.
+        let states = discv5.tcp_states.lock().unwrap();
+        let state = states.get(&node_id).unwrap();
+        assert!(
+            state.last_tcp_success.is_some(),
+            "re-discovery must not clear the TCP success timestamp"
+        );
+    }
 }

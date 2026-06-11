@@ -448,6 +448,7 @@ impl PeersManager {
                 // disconnect, because we only know the outgoing port
                 let mut peer = Peer::with_state(PeerAddr::from_tcp(addr), PeerConnectionState::In);
                 peer.remove_after_disconnect = true;
+                peer.has_ever_connected = true;
                 entry.insert(peer);
                 self.queued_actions.push_back(PeerAction::PeerAdded(peer_id));
             }
@@ -3424,6 +3425,64 @@ mod tests {
 
         let (best_id, _) = peers.best_unconnected().unwrap();
         assert_eq!(best_id, with_fork, "fork_id should break tie when reputation is equal");
+    }
+
+    #[tokio::test]
+    async fn test_best_unconnected_prefers_has_ever_connected() {
+        let mut peers = PeersManager::default();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8008);
+
+        let never_connected = PeerId::random();
+        peers.add_peer(never_connected, PeerAddr::from_tcp(addr), None);
+
+        let proven = PeerId::random();
+        peers.add_peer(proven, PeerAddr::from_tcp(addr), None);
+        peers.peers.get_mut(&proven).unwrap().has_ever_connected = true;
+
+        let (best_id, _) = peers.best_unconnected().unwrap();
+        assert_eq!(best_id, proven, "has_ever_connected should beat untested peer at equal reputation");
+    }
+
+    #[tokio::test]
+    async fn test_best_unconnected_has_ever_connected_beats_higher_reputation() {
+        let mut peers = PeersManager::default();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8008);
+
+        let high_rep = PeerId::random();
+        peers.add_peer(high_rep, PeerAddr::from_tcp(addr), None);
+        peers.peers.get_mut(&high_rep).unwrap().reputation = DEFAULT_REPUTATION + 100;
+
+        let proven = PeerId::random();
+        peers.add_peer(proven, PeerAddr::from_tcp(addr), None);
+        peers.peers.get_mut(&proven).unwrap().has_ever_connected = true;
+
+        let (best_id, _) = peers.best_unconnected().unwrap();
+        assert_eq!(best_id, proven, "has_ever_connected should outrank raw reputation");
+    }
+
+    #[tokio::test]
+    async fn test_has_ever_connected_set_on_outgoing_established() {
+        let mut peers = PeersManager::default();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8008);
+        let peer_id = PeerId::random();
+
+        peers.add_peer(peer_id, PeerAddr::from_tcp(addr), None);
+        assert!(!peers.peers[&peer_id].has_ever_connected);
+
+        peers.on_active_outgoing_established(peer_id);
+        assert!(peers.peers[&peer_id].has_ever_connected);
+    }
+
+    #[tokio::test]
+    async fn test_has_ever_connected_set_on_incoming_established() {
+        let mut peers = PeersManager::default();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8008);
+        let peer_id = PeerId::random();
+
+        assert!(peers.on_incoming_pending_session(addr.ip()).is_ok());
+        peers.on_incoming_session_established(peer_id, addr);
+
+        assert!(peers.peers[&peer_id].has_ever_connected);
     }
 
     #[tokio::test]
