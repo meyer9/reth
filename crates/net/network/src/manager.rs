@@ -842,6 +842,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     self.swarm.peers_mut().on_active_outgoing_established(peer_id);
                 }
 
+                if let Some(discv5) = self.handle.discv5() {
+                    discv5.on_tcp_established(peer_id);
+                }
+
                 self.update_active_connection_metrics();
 
                 let peer_kind = self

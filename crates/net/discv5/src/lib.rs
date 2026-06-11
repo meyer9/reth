@@ -9,11 +9,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use ::enr::Enr;
@@ -61,6 +61,17 @@ pub const MAX_KBUCKET_INDEX: usize = 255;
 /// Default is 0th index.
 pub const DEFAULT_MIN_TARGET_KBUCKET_INDEX: usize = 0;
 
+/// Per-peer TCP liveness tracked by the decay loop.
+///
+/// NAT'd peers can complete discv5 UDP sessions but may not be reachable over TCP. This struct
+/// lets the decay loop distinguish "never TCP-connected" from "recently TCP-connected" so it can
+/// probabilistically evict chronically unreachable peers from the routing table.
+#[derive(Debug, Clone)]
+struct NodeTcpState {
+    first_seen: Instant,
+    last_tcp_success: Option<Instant>,
+}
+
 /// Transparent wrapper around [`discv5::Discv5`].
 #[derive(Clone)]
 pub struct Discv5 {
@@ -79,6 +90,8 @@ pub struct Discv5 {
     // provide this via its [`local_enr`](discv5::Discv5::local_enr()). This is intended for
     // obtaining the port this service was launched at
     local_node_record: NodeRecord,
+    /// Per-peer TCP liveness; shared with the background decay task.
+    tcp_states: Arc<Mutex<HashMap<discv5::enr::NodeId, NodeTcpState>>>,
 }
 
 impl Discv5 {
@@ -147,6 +160,23 @@ impl Discv5 {
     /// This will prevent any future inclusion in the table
     pub fn ban_ip(&self, ip: IpAddr) {
         self.discv5.ban_ip(ip, None);
+    }
+
+    /// Marks a successful TCP + RLPx session with the given peer.
+    ///
+    /// Resets the decay clock for this peer so it will not be evicted while it remains
+    /// reachable over TCP.
+    pub fn on_tcp_established(&self, peer_id: PeerId) {
+        let Ok(node_id) = discv4_id_to_discv5_id(peer_id) else { return };
+        if let Ok(mut states) = self.tcp_states.lock() {
+            states
+                .entry(node_id)
+                .and_modify(|s| s.last_tcp_success = Some(Instant::now()))
+                .or_insert_with(|| NodeTcpState {
+                    first_seen: Instant::now(),
+                    last_tcp_success: Some(Instant::now()),
+                });
+        }
     }
 
     /// Returns the [`NodeRecord`] of the local node.
@@ -227,6 +257,12 @@ impl Discv5 {
             Arc::downgrade(&discv5),
         );
 
+        //
+        // 5. start bg TCP-liveness decay
+        //
+        let tcp_states = Arc::new(Mutex::new(HashMap::new()));
+        spawn_tcp_decay_bg(Arc::downgrade(&discv5), Arc::clone(&tcp_states));
+
         Ok((
             Self {
                 discv5,
@@ -235,6 +271,7 @@ impl Discv5 {
                 discovered_peer_filter,
                 metrics,
                 local_node_record,
+                tcp_states,
             },
             discv5_updates,
         ))
@@ -345,6 +382,15 @@ impl Discv5 {
             ?enr,
             "discovered peer"
         );
+
+        // Record when this peer was first offered as a dial candidate so the decay loop can
+        // age-gate eviction candidates. Only set on first discovery; never overwrite.
+        if let Ok(mut states) = self.tcp_states.lock() {
+            states.entry(enr.node_id()).or_insert_with(|| NodeTcpState {
+                first_seen: Instant::now(),
+                last_tcp_success: None,
+            });
+        }
 
         Some(DiscoveredPeer { node_record, fork_id })
     }
@@ -635,6 +681,93 @@ pub fn spawn_populate_kbuckets_bg(
     });
 }
 
+// ── TCP-liveness decay ──────────────────────────────────────────────────────────────────────────
+
+/// How often the decay loop wakes up.
+const TCP_DECAY_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// Grace period before a never-TCP-connected peer becomes eligible for eviction.
+const TCP_DECAY_GRACE_PERIOD: Duration = Duration::from_secs(30 * 60);
+/// Exponential-decay time constant for never-TCP-connected peers (mean eviction age ≈ 1 h).
+const TCP_DECAY_TAU_NEVER: Duration = Duration::from_secs(60 * 60);
+/// Idle threshold before a previously-connected peer re-enters the decay pool.
+const TCP_DECAY_STALE_THRESHOLD: Duration = Duration::from_secs(6 * 60 * 60);
+/// Time constant for stale-connection decay.
+const TCP_DECAY_TAU_STALE: Duration = Duration::from_secs(2 * 60 * 60);
+/// How long an evicted peer is banned from re-entering kbuckets.
+const TCP_DECAY_BAN_DURATION: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// P(evict | elapsed) = 1 − e^(−elapsed/τ).
+fn tcp_decay_probability(elapsed: Duration, tau: Duration) -> f64 {
+    1.0_f64 - (-(elapsed.as_secs_f64() / tau.as_secs_f64())).exp()
+}
+
+/// Spawns the background TCP-liveness decay task.
+///
+/// Every [`TCP_DECAY_INTERVAL`] the task iterates over every node in the discv5 routing table.
+/// Nodes that have been known for longer than the grace period but have never proven TCP
+/// reachability are probabilistically evicted via a timed ban. Nodes that were once reachable
+/// but have gone idle for longer than [`TCP_DECAY_STALE_THRESHOLD`] are subject to the same
+/// treatment with a separate time constant.
+///
+/// Probabilistic rather than deterministic eviction avoids the "thundering herd" problem where
+/// all NAT'd peers would be simultaneously expelled on a fixed timer, which would briefly starve
+/// the routing table before new peers fill it.
+fn spawn_tcp_decay_bg(
+    discv5: std::sync::Weak<discv5::Discv5>,
+    tcp_states: Arc<Mutex<HashMap<discv5::enr::NodeId, NodeTcpState>>>,
+) {
+    task::spawn(async move {
+        loop {
+            tokio::time::sleep(TCP_DECAY_INTERVAL).await;
+
+            let Some(discv5_handle) = discv5.upgrade() else { return };
+
+            let table_nodes: Vec<discv5::enr::NodeId> = discv5_handle.with_kbuckets(|kbuckets| {
+                kbuckets.read().iter_ref().map(|e| *e.node.key.preimage()).collect()
+            });
+
+            let now = Instant::now();
+            let mut rng = rand::rng();
+
+            for node_id in table_nodes {
+                let state = {
+                    let Ok(states) = tcp_states.lock() else { continue };
+                    states.get(&node_id).cloned()
+                };
+                let Some(NodeTcpState { first_seen, last_tcp_success }) = state else {
+                    continue;
+                };
+
+                let evict = match last_tcp_success {
+                    None => {
+                        let age = now.saturating_duration_since(first_seen);
+                        age >= TCP_DECAY_GRACE_PERIOD &&
+                            rand::Rng::random::<f64>(&mut rng) <
+                                tcp_decay_probability(age, TCP_DECAY_TAU_NEVER)
+                    }
+                    Some(last_success) => {
+                        let idle = now.saturating_duration_since(last_success);
+                        idle >= TCP_DECAY_STALE_THRESHOLD &&
+                            rand::Rng::random::<f64>(&mut rng) <
+                                tcp_decay_probability(idle, TCP_DECAY_TAU_STALE)
+                    }
+                };
+
+                if evict {
+                    trace!(target: "net::discv5",
+                        %node_id,
+                        "evicting peer from routing table: TCP liveness decay"
+                    );
+                    discv5_handle.ban_node(&node_id, Some(TCP_DECAY_BAN_DURATION));
+                    if let Ok(mut states) = tcp_states.lock() {
+                        states.remove(&node_id);
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Gets the next lookup target, based on which bucket is currently being targeted.
 pub fn get_lookup_target(
     kbucket_index: usize,
@@ -734,6 +867,7 @@ mod test {
                 (Ipv4Addr::LOCALHOST, 30303).into(),
                 PeerId::random(),
             ),
+            tcp_states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

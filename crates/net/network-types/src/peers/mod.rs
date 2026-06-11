@@ -36,6 +36,12 @@ pub struct Peer {
     /// Counts number of times the peer was backed off due to a severe
     /// [`BackoffKind`](crate::BackoffKind).
     pub severe_backoff_counter: u8,
+    /// Whether this peer has ever completed a successful TCP + RLPx session.
+    ///
+    /// Proven-reachable peers are preferred over untested discovery candidates
+    /// when selecting outbound dial targets, avoiding NAT'd peers that establish
+    /// discv5 UDP sessions but cannot accept inbound TCP connections.
+    pub has_ever_connected: bool,
 }
 
 // === impl Peer ===
@@ -67,6 +73,7 @@ impl Peer {
             kind: Default::default(),
             backed_off: false,
             severe_backoff_counter: 0,
+            has_ever_connected: false,
         }
     }
 

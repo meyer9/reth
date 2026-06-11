@@ -439,6 +439,7 @@ impl PeersManager {
                 }
 
                 peer.state = PeerConnectionState::In;
+                peer.has_ever_connected = true;
 
                 is_trusted = is_trusted || peer.is_trusted();
             }
@@ -655,6 +656,7 @@ impl PeersManager {
             self.connection_info.decr_state(peer.state);
             self.connection_info.inc_out();
             peer.state = PeerConnectionState::Out;
+            peer.has_ever_connected = true;
             self.connected_at.insert(peer_id, std::time::Instant::now());
         }
     }
@@ -1032,15 +1034,29 @@ impl PeersManager {
                 return Some((*maybe_better.0, maybe_better.1))
             }
 
-            // prefer higher reputation, break ties by fork_id presence
-            match maybe_better.1.reputation.cmp(&best_peer.1.reputation) {
-                std::cmp::Ordering::Greater => best_peer = maybe_better,
-                std::cmp::Ordering::Equal
-                    if maybe_better.1.fork_id.is_some() && best_peer.1.fork_id.is_none() =>
-                {
-                    best_peer = maybe_better
-                }
-                _ => {}
+            // Proven-reachable peers (successful TCP session in the past) always beat
+            // untested discovery candidates. Many discv5 peers are behind NAT: they can
+            // establish outbound UDP sessions but cannot accept inbound TCP, so
+            // has_ever_connected is a much stronger reachability signal than reputation
+            // alone for fresh-from-discovery unknowns.
+            // Within the same reachability class: prefer higher reputation, then fork_id.
+            let is_better = match (
+                maybe_better.1.has_ever_connected,
+                best_peer.1.has_ever_connected,
+            ) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => match maybe_better.1.reputation.cmp(&best_peer.1.reputation) {
+                    std::cmp::Ordering::Greater => true,
+                    std::cmp::Ordering::Equal => {
+                        maybe_better.1.fork_id.is_some() && best_peer.1.fork_id.is_none()
+                    }
+                    std::cmp::Ordering::Less => false,
+                },
+            };
+
+            if is_better {
+                best_peer = maybe_better;
             }
         }
         Some((*best_peer.0, best_peer.1))
