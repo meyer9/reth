@@ -87,9 +87,14 @@ fn _deprioritize_background_threads() {
 
         // SCHED_IDLE is the lowest-priority scheduling class. The kernel will only schedule these
         // threads when no other (SCHED_OTHER/SCHED_BATCH/RT) threads need the CPU.
-        // SAFETY: sched_setscheduler is safe to call with a valid TID.
+        // SAFETY: sched_setscheduler is safe to call with a valid TID. `sched_param` is zeroed
+        // because `libc::sched_param` has different fields across musl versions (deprecated
+        // `sched_ss_*` fields on older musl, private padding fields on musl v1.2.3+), making a
+        // struct literal non-portable. Zeroing is correct: `sched_priority = 0` is the only
+        // meaningful field for `SCHED_IDLE`, which ignores priority entirely.
         unsafe {
-            let param = libc::sched_param { sched_priority: 0 };
+            let mut param: libc::sched_param = std::mem::zeroed();
+            param.sched_priority = 0;
             if libc::sched_setscheduler(tid, libc::SCHED_IDLE, std::ptr::from_ref(&param)) != 0 {
                 tracing::debug!(
                     tid,
