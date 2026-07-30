@@ -1406,11 +1406,17 @@ where
         if let Some((historical, blocks)) = state.tree_state.blocks_by_hash(hash) {
             debug!(target: "engine::tree::payload_validator", %hash, %historical, "found canonical state for block in memory, creating provider builder");
             // the block leads back to the canonical chain
-            return Ok(Some(StateProviderBuilder::new(
-                self.provider.clone(),
-                historical,
-                Some(blocks),
-            )))
+            return Ok(Some({
+                let builder = StateProviderBuilder::new(
+                    self.provider.clone(),
+                    historical,
+                    Some(blocks),
+                );
+                #[cfg(feature = "mmr")]
+                let builder =
+                    builder.with_db_path(reth_provider::mmr::db_path_from_factory(&self.provider));
+                builder
+            }))
         }
 
         // Check if the block is persisted
@@ -1418,7 +1424,13 @@ where
             debug!(target: "engine::tree::payload_validator", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
+            return Ok(Some({
+                let builder = StateProviderBuilder::new(self.provider.clone(), hash, None);
+                #[cfg(feature = "mmr")]
+                let builder =
+                    builder.with_db_path(reth_provider::mmr::db_path_from_factory(&self.provider));
+                builder
+            }))
         }
 
         debug!(target: "engine::tree::payload_validator", %hash, "no canonical state found for block");

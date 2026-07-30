@@ -125,3 +125,4 @@ trie-debug = [
     "reth-engine-primitives/trie-debug",
     "reth-node-core/trie-debug",
 ]
+mmr = ["reth-provider/mmr", "reth-engine-tree/mmr", "reth-rpc/mmr"]

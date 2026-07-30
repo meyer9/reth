@@ -766,6 +766,18 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 if !merged_hashed_state.is_empty() {
                     self.write_hashed_state(&merged_hashed_state)?;
                 }
+                #[cfg(feature = "mmr")]
+                {
+                    // Append per-block (not the merged batch): MMR ops are ordered and
+                    // must match sequential payload peeks.
+                    for block in state_trie_blocks {
+                        crate::mmr::append_hashed_state_best_effort_at_block(
+                            &self.db_path,
+                            Some(block.recovered_block.number()),
+                            block.trie_data.get().sorted.hashed_state.as_ref(),
+                        );
+                    }
+                }
                 timings.write_hashed_state += start.elapsed();
 
                 let start = Instant::now();

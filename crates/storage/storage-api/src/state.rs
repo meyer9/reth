@@ -197,4 +197,12 @@ pub trait StateProviderFactory: BlockIdReader + Send {
     ///
     /// This will return `None` if there's no pending state.
     fn maybe_pending(&self) -> ProviderResult<Option<StateProviderBox>>;
+
+    /// Primary database directory (`…/db`), when this factory is path-backed.
+    ///
+    /// Used by MMR/QMDB peeks and proofs so multi-node in-process stacks don't share a
+    /// single process-wide QMDB path.
+    fn db_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }

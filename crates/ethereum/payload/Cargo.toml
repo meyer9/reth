@@ -42,3 +42,10 @@ alloy-primitives.workspace = true
 
 # misc
 tracing.workspace = true
+
+# optional MMR / QMDB header root
+reth-provider = { workspace = true, optional = true }
+
+[features]
+default = []
+mmr = ["dep:reth-provider", "reth-provider/mmr"]

@@ -34,6 +34,7 @@ reth-chain-state.workspace = true
 reth-node-types.workspace = true
 reth-static-file-types = { workspace = true, features = ["std"] }
 reth-fs-util.workspace = true
+reth-qmdb = { workspace = true, optional = true }
 
 # ethereum
 alloy-eip7928.workspace = true
@@ -88,6 +89,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 
 [features]
 jemalloc = ["rocksdb/jemalloc"]
+mmr = ["dep:reth-qmdb"]
 partial-persistence = [
     "reth-stages-types/partial-persistence",
     "reth-storage-overlay/partial-persistence",

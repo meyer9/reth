@@ -201,6 +201,13 @@ min-trace-logs = [
 
 partial-persistence = ["reth-node-core/partial-persistence"]
 trie-debug = ["reth-node-builder/trie-debug", "reth-node-core/trie-debug"]
+mmr = [
+    "reth-provider/mmr",
+    "reth-node-ethereum/mmr",
+    "reth-node-builder/mmr",
+    "reth-ethereum-payload-builder/mmr",
+    "reth-rpc/mmr",
+]
 
 [[bin]]
 name = "reth"

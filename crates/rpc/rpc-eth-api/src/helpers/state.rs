@@ -175,6 +175,30 @@ pub trait EthState: LoadState + SpawnBlocking {
             self.ensure_within_proof_window(block_id)?;
 
             self.spawn_blocking_io_fut(async move |this| {
+                #[cfg(feature = "mmr")]
+                {
+                    let qmdb_path = this.provider().db_path().map(|db| {
+                        db.parent().map(|p| p.join("qmdb")).unwrap_or_else(|| db.join("qmdb"))
+                    });
+                    if let Some(path) = qmdb_path.as_ref() {
+                        if let Some(resp) =
+                            reth_qmdb::try_get_proof_at(path, address, &keys).map_err(|e| {
+                                Self::Error::from_eth_err(EthApiError::Internal(RethError::msg(
+                                    e.to_string(),
+                                )))
+                            })?
+                        {
+                            return Ok(resp);
+                        }
+                    } else if let Some(resp) = reth_qmdb::try_get_proof(address, &keys).map_err(|e| {
+                        Self::Error::from_eth_err(EthApiError::Internal(RethError::msg(
+                            e.to_string(),
+                        )))
+                    })? {
+                        return Ok(resp);
+                    }
+                }
+
                 let state = this.state_at_block_id(block_id).await?;
                 let storage_keys = keys.iter().map(|key| key.as_b256()).collect::<Vec<_>>();
                 let proof = state

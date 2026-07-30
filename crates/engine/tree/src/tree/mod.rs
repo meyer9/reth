@@ -112,6 +112,9 @@ pub struct StateProviderBuilder<N: NodePrimitives, P> {
     historical: B256,
     /// The blocks that form the chain from historical to target and are in memory.
     overlay: Option<Vec<ExecutedBlock<N>>>,
+    /// Primary DB directory (`…/db`) for per-node QMDB peeks when `mmr` is enabled.
+    #[cfg(feature = "mmr")]
+    db_path: Option<std::path::PathBuf>,
 }
 
 impl<N: NodePrimitives, P> StateProviderBuilder<N, P> {
@@ -122,7 +125,26 @@ impl<N: NodePrimitives, P> StateProviderBuilder<N, P> {
         historical: B256,
         overlay: Option<Vec<ExecutedBlock<N>>>,
     ) -> Self {
-        Self { provider_factory, historical, overlay }
+        Self {
+            provider_factory,
+            historical,
+            overlay,
+            #[cfg(feature = "mmr")]
+            db_path: None,
+        }
+    }
+
+    /// Attach the primary DB path used for QMDB peeks (avoids process-global path races).
+    #[cfg(feature = "mmr")]
+    pub fn with_db_path(mut self, db_path: Option<std::path::PathBuf>) -> Self {
+        self.db_path = db_path;
+        self
+    }
+
+    /// Primary DB path for QMDB peeks, if known.
+    #[cfg(feature = "mmr")]
+    pub fn db_path(&self) -> Option<&std::path::Path> {
+        self.db_path.as_deref()
     }
 }
 
@@ -3402,11 +3424,15 @@ where
         if let Some((historical, blocks)) = self.state.tree_state.blocks_by_hash(hash) {
             debug!(target: "engine::tree", %hash, %historical, "found canonical state for block in memory, creating provider builder");
             // the block leads back to the canonical chain
-            return Ok(Some(StateProviderBuilder::new(
+            let builder = StateProviderBuilder::new(
                 self.provider.clone(),
                 historical,
                 Some(blocks),
-            )))
+            );
+            #[cfg(feature = "mmr")]
+            let builder =
+                builder.with_db_path(reth_provider::mmr::db_path_from_factory(&self.provider));
+            return Ok(Some(builder))
         }
 
         // Check if the block is persisted
@@ -3414,7 +3440,11 @@ where
             debug!(target: "engine::tree", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
+            let builder = StateProviderBuilder::new(self.provider.clone(), hash, None);
+            #[cfg(feature = "mmr")]
+            let builder =
+                builder.with_db_path(reth_provider::mmr::db_path_from_factory(&self.provider));
+            return Ok(Some(builder))
         }
 
         debug!(target: "engine::tree", %hash, "no canonical state found for block");

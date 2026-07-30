@@ -377,6 +377,10 @@ impl<N: ProviderNodeTypes> DatabaseProviderFactory for BlockchainProvider<N> {
     fn database_provider_rw(&self) -> ProviderResult<Self::ProviderRW> {
         DatabaseProviderFactory::database_provider_rw(&self.database)
     }
+
+    fn db_path(&self) -> Option<std::path::PathBuf> {
+        self.database.db_path()
+    }
 }
 
 impl<N: ProviderNodeTypes> StaticFileProviderFactory for BlockchainProvider<N> {
@@ -835,6 +839,10 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
         }
 
         Ok(None)
+    }
+
+    fn db_path(&self) -> Option<std::path::PathBuf> {
+        DatabaseProviderFactory::db_path(self)
     }
 }
 

@@ -1,5 +1,5 @@
 use alloy_eips::BlockId;
-use alloy_primitives::{map::AddressMap, U256, U64};
+use alloy_primitives::{map::AddressMap, Bytes, B256, U256, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,17 @@ pub trait RethApi {
     #[method(name = "jit")]
     async fn reth_jit(&self, action: RethJitAction) -> RpcResult<()>;
 
+    /// Returns the current QMDB/MMR root (candidate `stateRoot`) and leaf count.
+    #[method(name = "mmrGetRoot")]
+    async fn reth_mmr_get_root(&self) -> RpcResult<MmrRootResponse>;
+
+    /// Returns an MMR inclusion proof for the active QMDB op at `key`.
+    ///
+    /// Key encoding matches the QMDB eth bridge: `0x61 || hashedAddress` for accounts,
+    /// `0x73 || hashedAddress || hashedSlot` for storage.
+    #[method(name = "mmrGetProof")]
+    async fn reth_mmr_get_proof(&self, key: Bytes) -> RpcResult<MmrProofResponse>;
+
     /// Subscribe to json `ChainNotifications`
     #[subscription(
         name = "subscribeChainNotifications",
@@ -63,6 +74,30 @@ pub trait RethApi {
     async fn reth_subscribe_finalized_chain_notifications(
         &self,
     ) -> jsonrpsee::core::SubscriptionResult;
+}
+
+/// Response for [`RethApi::reth_mmr_get_root`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MmrRootResponse {
+    /// QMDB/MMR root digest.
+    pub root: B256,
+    /// Number of leaves (ops) in the MMR.
+    pub leaves: u64,
+}
+
+/// Response for [`RethApi::reth_mmr_get_proof`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MmrProofResponse {
+    /// Leaf location of the proven op.
+    pub location: u64,
+    /// Encoded operation bytes that are the MMR leaf element.
+    pub leaf: Bytes,
+    /// Sibling / peak digests for the inclusion proof.
+    pub proof: Vec<B256>,
+    /// Root the proof commits to.
+    pub root: B256,
 }
 
 /// Supported `reth_jit` control actions.

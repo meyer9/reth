@@ -31,6 +31,7 @@ reth-network-api.workspace = true
 reth-node-api.workspace = true
 reth-trie-common = { workspace = true, features = ["eip1186"] }
 reth-prune-types.workspace = true
+reth-qmdb = { workspace = true, optional = true }
 
 # ethereum
 alloy-evm = { workspace = true, features = ["overrides", "call-util"] }
@@ -65,3 +66,4 @@ tracing.workspace = true
 [features]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]
 client = ["jsonrpsee/client", "jsonrpsee/async-client"]
+mmr = ["dep:reth-qmdb"]

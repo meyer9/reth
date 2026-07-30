@@ -1,0 +1,18 @@
+[package]
+name = "reth-mmr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "MMR/MMB authenticated structures for Reth (Commonware-compatible)"
+
+[lints]
+workspace = true
+
+[dependencies]
+commonware-storage = { workspace = true }
+commonware-cryptography = { workspace = true }
+thiserror = { workspace = true }
+alloy-primitives = { workspace = true }

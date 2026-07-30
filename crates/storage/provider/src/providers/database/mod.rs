@@ -136,6 +136,12 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
         let legacy_settings = StorageSettings::v1();
         let database_provider_metrics = Arc::new(DatabaseProviderMetrics::default());
         let overlay_manager = OverlayManager::default();
+        let db_path = db.path();
+        #[cfg(feature = "mmr")]
+        {
+            let qmdb = crate::mmr::qmdb_path_from_db_path(&db_path);
+            crate::mmr::register_qmdb_datadir(qmdb);
+        }
         let storage_settings = DatabaseProvider::<_, N>::new(
             db.tx()?,
             chain_spec.clone(),
@@ -146,7 +152,7 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             rocksdb_provider.clone(),
             overlay_manager.clone(),
             runtime.clone(),
-            db.path(),
+            db_path,
             database_provider_metrics.clone(),
         )
         .storage_settings()?
@@ -625,6 +631,10 @@ impl<N: ProviderNodeTypes> DatabaseProviderFactory for ProviderFactory<N> {
 
     fn database_provider_rw(&self) -> ProviderResult<Self::ProviderRW> {
         self.provider_rw().map(|provider| provider.0)
+    }
+
+    fn db_path(&self) -> Option<std::path::PathBuf> {
+        Some(self.db.path())
     }
 }
 

@@ -103,6 +103,7 @@ rand.workspace = true
 rand_08.workspace = true
 
 [features]
+mmr = ["reth-provider/mmr"]
 test-utils = [
     "reth-chain-state/test-utils",
     "reth-chainspec/test-utils",

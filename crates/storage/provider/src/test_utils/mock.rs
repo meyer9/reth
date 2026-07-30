@@ -37,7 +37,7 @@ use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_api::{
     BlockBodyIndicesProvider, BytecodeReader, DBProvider, DatabaseProviderFactory,
     HashedPostStateProvider, NodePrimitivesProvider, StageCheckpointReader, StateProofProvider,
-    StorageChangeSetReader, StorageRootProvider, StorageSettingsCache,
+    StorageChangeSetReader, StoragePath, StorageRootProvider, StorageSettingsCache,
 };
 use reth_storage_errors::provider::{ConsistentViewError, ProviderError, ProviderResult};
 use reth_trie::{
@@ -1134,6 +1134,12 @@ impl<T: NodePrimitives, ChainSpec: Send + Sync> StorageSettingsCache
     }
 
     fn set_storage_settings_cache(&self, _settings: StorageSettings) {}
+}
+
+impl<T: NodePrimitives, ChainSpec: Send + Sync> StoragePath for MockEthProvider<T, ChainSpec> {
+    fn storage_path(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from("/mock/db")
+    }
 }
 
 impl<T: NodePrimitives, ChainSpec: EthChainSpec + Send + Sync + 'static> StateProviderFactory

@@ -155,6 +155,14 @@ pub trait DatabaseProviderFactory: Send + Sync {
 
     /// Create new read-write database provider.
     fn database_provider_rw(&self) -> ProviderResult<Self::ProviderRW>;
+
+    /// Path to the primary database directory (`…/db`), if this factory has one.
+    ///
+    /// Default is [`None`] (e.g. in-memory / mock providers). Real factories override this so
+    /// per-node features (QMDB peeks) do not rely on a process-wide path registry.
+    fn db_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// Helper type alias to get the associated transaction type from a [`DatabaseProviderFactory`].

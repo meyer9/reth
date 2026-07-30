@@ -2,7 +2,7 @@ use std::{future::Future, sync::Arc};
 
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockId;
-use alloy_primitives::{map::AddressMap, U256, U64};
+use alloy_primitives::{map::AddressMap, Bytes, B256, U256, U64};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use jsonrpsee::{core::RpcResult, PendingSubscriptionSink, SubscriptionMessage, SubscriptionSink};
@@ -14,7 +14,7 @@ use reth_errors::{RethError, RethResult};
 use reth_evm::{execute::Executor, ConfigureEvm};
 use reth_execution_types::ExecutionOutcome;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
-use reth_rpc_api::{RethApiServer, RethJitAction};
+use reth_rpc_api::{MmrProofResponse, MmrRootResponse, RethApiServer, RethJitAction};
 use reth_rpc_eth_types::{EthApiError, EthResult};
 use reth_storage_api::{
     BlockReader, BlockReaderIdExt, ChangeSetReader, StateProviderFactory, TransactionVariant,
@@ -243,6 +243,45 @@ where
         }
 
         Ok(())
+    }
+
+    /// Handler for `reth_mmrGetRoot`
+    async fn reth_mmr_get_root(&self) -> RpcResult<MmrRootResponse> {
+        let path = reth_qmdb::default_path().ok_or_else(|| {
+            EthApiError::Internal(RethError::msg(
+                "QMDB path not registered (enable provider mmr feature and persist a block first)",
+            ))
+        })?;
+        reth_qmdb::with_qmdb(path, |db| {
+            let root = db.root_b256()?;
+            Ok(MmrRootResponse { root, leaves: db.len() })
+        })
+        .map_err(|e| EthApiError::Internal(RethError::msg(e.to_string())).into())
+    }
+
+    /// Handler for `reth_mmrGetProof`
+    async fn reth_mmr_get_proof(&self, key: Bytes) -> RpcResult<MmrProofResponse> {
+        let path = reth_qmdb::default_path().ok_or_else(|| {
+            EthApiError::Internal(RethError::msg(
+                "QMDB path not registered (enable provider mmr feature and persist a block first)",
+            ))
+        })?;
+        reth_qmdb::with_qmdb(path, |db| {
+            let proof = db.prove_key(key.as_ref())?;
+            let digests = proof
+                .proof
+                .digests
+                .iter()
+                .map(|d| B256::from_slice(d.as_ref()))
+                .collect();
+            Ok(MmrProofResponse {
+                location: *proof.location,
+                leaf: Bytes::from(proof.operation.encode()),
+                proof: digests,
+                root: reth_mmr::digest_to_b256(&proof.root),
+            })
+        })
+        .map_err(|e| EthApiError::Internal(RethError::msg(e.to_string())).into())
     }
 
     /// Handler for `reth_subscribeChainNotifications`

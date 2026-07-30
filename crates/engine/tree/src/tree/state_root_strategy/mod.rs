@@ -994,6 +994,20 @@ where
         _output: Arc<BlockExecutionOutput<N::Receipt>>,
         hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<StateRootJobOutcome> {
+        #[cfg(feature = "mmr")]
+        if let Some(root) = reth_provider::mmr::peek_state_root_prefer_path_at_block(
+            self.provider_builder.db_path(),
+            Some(_block.number()),
+            hashed_state.get().as_ref(),
+        )? {
+            tracing::debug!(
+                target: "engine::tree::state_root_strategy",
+                %root,
+                "using QMDB peek root as state root (synchronous job)"
+            );
+            return Ok(StateRootJobOutcome::new(root, Arc::new(Default::default())));
+        }
+
         let provider = self.provider_builder.clone().build()?;
         let (state_root, trie_updates) =
             provider.state_root_with_updates(hashed_state.get().as_ref().clone())?;
@@ -1049,10 +1063,36 @@ where
     /// post state is returned in the outcome for validation to re-check against.
     fn compute_serial(
         &self,
+        block_number: u64,
         output: &BlockExecutionOutput<N::Receipt>,
     ) -> ProviderResult<StateRootJobOutcome> {
         let provider = self.provider_builder.clone().build()?;
         let hashed_state = Arc::new(provider.hashed_post_state(&output.state));
+
+        #[cfg(feature = "mmr")]
+        if let Some(root) = reth_provider::mmr::peek_state_root_prefer_path_at_block(
+            self.provider_builder.db_path(),
+            Some(block_number),
+            hashed_state.as_ref(),
+        )? {
+            eprintln!(
+                "[mmr] engine peek ok root={root} path={:?}",
+                self.provider_builder.db_path()
+            );
+            tracing::debug!(
+                target: "engine::tree::state_root_strategy",
+                %root,
+                "using QMDB peek root as state root"
+            );
+            return Ok(StateRootJobOutcome::new(root, Arc::new(Default::default()))
+                .with_hashed_state(Some(hashed_state)))
+        } else {
+            eprintln!(
+                "[mmr] engine peek skipped/none path={:?}",
+                self.provider_builder.db_path()
+            );
+        }
+
         let (state_root, trie_updates) =
             provider.state_root_with_updates(hashed_state.as_ref().clone())?;
         self.metrics.state_root_task_fallback_success_total.increment(1);
@@ -1080,7 +1120,7 @@ where
             block_state_root = ?block.header().state_root(),
             "State root task returned incorrect state root, recomputing serially"
         );
-        self.compute_serial(output)
+        self.compute_serial(block.number(), output)
     }
 
     fn sparse_outcome(
@@ -1139,12 +1179,21 @@ where
         output: Arc<BlockExecutionOutput<N::Receipt>>,
         _hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<StateRootJobOutcome> {
+        // Prefer QMDB when registered so built/validated headers use the same root
+        // without taking the MPT sparse-trie path then falling back.
+        #[cfg(feature = "mmr")]
+        if self.provider_builder.db_path().is_some() ||
+            reth_provider::mmr::qmdb_datadir().is_some()
+        {
+            return self.compute_serial(block.number(), &output);
+        }
+
         if self.timeout.is_none() {
             return match self.handle.state_root() {
                 Ok(outcome) => self.verified_sparse_outcome(block, &output, outcome),
                 Err(err) => {
                     debug!(target: "engine::tree::state_root_strategy", %err, "State root task failed, falling back to serial root");
-                    self.compute_serial(&output)
+                    self.compute_serial(block.number(), &output)
                 }
             }
         }

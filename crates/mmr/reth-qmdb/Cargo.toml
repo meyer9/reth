@@ -1,0 +1,28 @@
+[package]
+name = "reth-qmdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "QMDB-style authenticated KV over reth-mmr-db"
+
+[lints]
+workspace = true
+
+[dependencies]
+reth-mmr.workspace = true
+reth-mmr-db.workspace = true
+rocksdb.workspace = true
+thiserror.workspace = true
+sha2 = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rpc-types-eth = { workspace = true, features = ["serde"] }
+alloy-serde = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-trie-common = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json = { version = "1.0", default-features = true }

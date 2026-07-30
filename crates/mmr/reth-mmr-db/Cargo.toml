@@ -1,0 +1,20 @@
+[package]
+name = "reth-mmr-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "RocksDB-backed MMR/MMB persistence for Reth"
+
+[lints]
+workspace = true
+
+[dependencies]
+reth-mmr.workspace = true
+rocksdb.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

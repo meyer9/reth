@@ -116,6 +116,9 @@ members = [
     "crates/trie/parallel/",
     "crates/trie/sparse",
     "crates/trie/trie",
+    "crates/mmr/reth-mmr",
+    "crates/mmr/reth-mmr-db",
+    "crates/mmr/reth-qmdb",
     "examples/beacon-api-sidecar-fetcher/",
     "examples/beacon-api-sse/",
     "examples/bsc-p2p",
@@ -426,6 +429,11 @@ reth-trie-common = { path = "crates/trie/common", default-features = false }
 reth-trie-db = { path = "crates/trie/db" }
 reth-trie-parallel = { path = "crates/trie/parallel" }
 reth-trie-sparse = { path = "crates/trie/sparse", default-features = false }
+reth-mmr = { path = "crates/mmr/reth-mmr" }
+reth-mmr-db = { path = "crates/mmr/reth-mmr-db" }
+reth-qmdb = { path = "crates/mmr/reth-qmdb" }
+commonware-storage = { version = "2026.7.0", default-features = false, features = ["std"] }
+commonware-cryptography = { version = "2026.7.0", default-features = false }
 reth-zstd-compressors = { version = "0.5.0", default-features = false }
 
 # revm

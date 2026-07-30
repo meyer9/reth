@@ -15,6 +15,10 @@
 /// Utility functions for initializing the database.
 pub mod init;
 
+#[cfg(feature = "mmr")]
+/// Feature-gated QMDB/MMR persistence hooks.
+pub mod mmr;
+
 /// Various provider traits.
 mod traits;
 pub use traits::*;

@@ -9,7 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::{BlockHeader, Transaction};
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, B256, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use reth_basic_payload_builder::{
@@ -32,7 +32,7 @@ use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_payload_primitives::PayloadAttributes;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_revm::{database::StateProviderDatabase, db::State};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{DatabaseProviderFactory, StateProviderFactory};
 use reth_transaction_pool::{
     error::{Eip4844PoolTransactionError, InvalidPoolTransactionError},
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -81,7 +81,10 @@ impl<Pool, Client, EvmConfig> EthereumPayloadBuilder<Pool, Client, EvmConfig> {
 impl<Pool, Client, EvmConfig> PayloadBuilder for EthereumPayloadBuilder<Pool, Client, EvmConfig>
 where
     EvmConfig: ConfigureEvm<Primitives = EthPrimitives, NextBlockEnvCtx = NextBlockEnvAttributes>,
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + Clone
+        + DatabaseProviderFactory,
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
 {
     type Attributes = EthPayloadAttributes;
@@ -154,7 +157,9 @@ pub fn default_ethereum_payload<EvmConfig, Client, Pool, F>(
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
     EvmConfig: ConfigureEvm<Primitives = EthPrimitives, NextBlockEnvCtx = NextBlockEnvAttributes>,
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks>,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + DatabaseProviderFactory,
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
     F: FnOnce(BestTransactionsAttributes) -> BestTransactionsIter<Pool>,
 {
@@ -168,6 +173,9 @@ where
     } = args;
     let PayloadConfig { parent_header, attributes, payload_id, .. } = config;
     let skip_state_root = builder_config.skip_state_root;
+
+    #[cfg(feature = "mmr")]
+    let qmdb_db_path = client.db_path();
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
@@ -460,28 +468,72 @@ where
             state_provider.as_ref(),
             Some((parent_header.state_root(), Default::default())),
         )?
-    } else if let Some(mut task) = state_root_handle {
-        // Drop the state hook, which signals the state-root task to finalize.
-        builder.evm_mut().db_mut().set_state_hook(None);
-
-        // The state-root task has been computing incrementally alongside tx execution.
-        // This recv() waits for the final root hash — most work is already done.
-        // Fall back to sync state root if the trie pipeline fails.
-        match task.state_root() {
-            Ok(outcome) => {
-                debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, job = task.name(), "received state root from state-root job");
-                builder.finish(
-                    state_provider.as_ref(),
-                    Some((outcome.state_root, Arc::unwrap_or_clone(outcome.trie_updates))),
-                )?
-            }
-            Err(err) => {
-                warn!(target: "payload_builder", id=%payload_id, %err, "state-root job failed, falling back to sync state root");
-                builder.finish(state_provider.as_ref(), None)?
-            }
-        }
     } else {
-        builder.finish(state_provider.as_ref(), None)?
+        // Drop the state hook so any incremental state-root task can finalize.
+        if state_root_handle.is_some() {
+            builder.evm_mut().db_mut().set_state_hook(None);
+        }
+
+        #[cfg(feature = "mmr")]
+        let mmr_root: Option<B256> = {
+            use revm::database::states::bundle_state::BundleRetention;
+            let db = builder.evm_mut().db_mut();
+            db.merge_transitions(BundleRetention::Reverts);
+            let hashed = reth_storage_api::HashedPostStateProvider::hashed_post_state(
+                state_provider.as_ref(),
+                &db.bundle_state,
+            );
+            match reth_provider::mmr::peek_state_root_prefer_path(
+                qmdb_db_path.as_deref(),
+                &hashed,
+            ) {
+                Ok(Some(root)) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %root,
+                        "using QMDB peek root as payload stateRoot"
+                    );
+                    Some(root)
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "QMDB peek root failed; falling back to MPT state root"
+                    );
+                    None
+                }
+            }
+        };
+        #[cfg(not(feature = "mmr"))]
+        let mmr_root: Option<B256> = None;
+
+        if let Some(root) = mmr_root {
+            let _ = state_root_handle.take();
+            builder.finish(state_provider.as_ref(), Some((root, Default::default())))?
+        } else if let Some(mut task) = state_root_handle {
+            // The state-root task has been computing incrementally alongside tx execution.
+            // This recv() waits for the final root hash — most work is already done.
+            // Fall back to sync state root if the trie pipeline fails.
+            match task.state_root() {
+                Ok(outcome) => {
+                    debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, job = task.name(), "received state root from state-root job");
+                    builder.finish(
+                        state_provider.as_ref(),
+                        Some((outcome.state_root, Arc::unwrap_or_clone(outcome.trie_updates))),
+                    )?
+                }
+                Err(err) => {
+                    warn!(target: "payload_builder", id=%payload_id, %err, "state-root job failed, falling back to sync state root");
+                    builder.finish(state_provider.as_ref(), None)?
+                }
+            }
+        } else {
+            builder.finish(state_provider.as_ref(), None)?
+        }
     };
 
     let requests = chain_spec

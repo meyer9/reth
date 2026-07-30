@@ -43,6 +43,8 @@ reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
 reth-payload-primitives.workspace = true
 reth-trie-common.workspace = true
+reth-qmdb.workspace = true
+reth-mmr.workspace = true
 
 # ethereum
 alloy-evm = { workspace = true, features = ["overrides"] }
@@ -108,3 +110,4 @@ js-tracer = [
     "reth-rpc-eth-types/js-tracer",
     "reth-rpc-eth-api/js-tracer",
 ]
+mmr = ["reth-rpc-eth-api/mmr"]

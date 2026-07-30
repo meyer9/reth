@@ -127,3 +127,10 @@ test-utils = [
     "reth-stages-types/test-utils",
     "reth-tasks/test-utils",
 ]
+mmr = [
+    "reth-provider/mmr",
+    "reth-ethereum-payload-builder/mmr",
+    "reth-node-builder/mmr",
+    "reth-rpc/mmr",
+    "reth-rpc-eth-api/mmr",
+]
